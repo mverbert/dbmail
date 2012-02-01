@@ -270,35 +270,6 @@ if ( test [ "x$lookforldap" != "xno" ] || test [ "x$lookforauthldap" != "xno" ] 
 fi
 ])
 
-AC_DEFUN([DM_CHECK_ZDB], [dnl
-
-	AC_ARG_WITH(zdb,[  --with-zdb=PATH	  path to libzdb base directory (e.g. /usr/local or /usr)],
-		[lookforzdb="$withval"],[lookforzdb="no"])
-
-	if test [ "x$lookforzdb" = "xno" ] ; then
-		CFLAGS="$CFLAGS -I${prefix}/include/zdb"
-	else
-		CFLAGS="$CFLAGS -I${lookforzdb}/include/zdb"
-	fi
-
-	AC_CHECK_HEADERS([URL.h ResultSet.h PreparedStatement.h Connection.h ConnectionPool.h SQLException.h],
-		[ZDBLIB="-lzdb"], 
-		[ZDBLIB="failed"],
-	[[
-#include <URL.h>
-#include <ResultSet.h>
-#include <PreparedStatement.h>
-#include <Connection.h>
-#include <ConnectionPool.h>
-#include <SQLException.h>	
-	]])
-	if test [ "x$ZDBLIB" = "xfailed" ]; then
-		AC_MSG_ERROR([Could not find ZDB library.])
-	else
-		LDFLAGS="$LDFLAGS $ZDBLIB"
-	fi
-])
-
 AC_DEFUN([DM_SET_SQLITECREATE], [dnl
 	SQLITECREATE=`sed -e 's/\"/\\\"/g' -e 's/^/\"/' -e 's/$/\\\n\"/' -e '$!s/$/ \\\\/'  sql/sqlite/create_tables.sqlite`
 ])
