@@ -4,3 +4,7 @@ cscope.out
 *.lo
 man/*.[0-9]
 autom4te.cache/
+Makefile.in
+aclocal.m4
+configure
+config.in
