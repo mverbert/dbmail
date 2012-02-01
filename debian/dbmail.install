@@ -1,4 +1,5 @@
 usr/sbin/dbmail-export
+usr/sbin/dbmail-httpd
 usr/sbin/dbmail-imapd
 usr/sbin/dbmail-lmtpd
 usr/sbin/dbmail-pop3d
