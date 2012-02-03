@@ -13,8 +13,8 @@ AC_MSG_RESULT([
  DM_STATEDIR:               $DM_STATEDIR
  USE_DM_GETOPT:             $USE_DM_GETOPT
  CFLAGS:                    $CFLAGS
- GLIB:                      $ac_glib_libs
- GMIME:                     $ac_gmime_libs
+ GLIB:                      $GLIB_LIBS
+ GMIME:                     $GMIME_LIBS
  SIEVE:                     $SIEVEINC$SIEVELIB
  LDAP:                      $LDAPINC$LDAPLIB
  SHARED:                    $enable_shared
@@ -24,8 +24,8 @@ AC_MSG_RESULT([
  MATH:                      $MATHLIB
  MHASH:                     $MHASHLIB
  LIBEVENT:                  $EVENTLIB
- OPENSSL:                   $SSLLIB
- ZDB:                       $ZDBLIB
+ OPENSSL:                   $SSL_LIBS
+ ZDB:                       $ZDB_LIBS
 
 ])
 ])
@@ -270,6 +270,13 @@ if ( test [ "x$lookforldap" != "xno" ] || test [ "x$lookforauthldap" != "xno" ] 
 fi
 ])
 
+AC_DEFUN([DM_CHECK_ZDB], [dnl
+PKG_CHECK_MODULES([ZDB], [zdb >= 2.10], [dnl
+CFLAGS="$CFLAGS $ZDB_CFLAGS"
+LDFLAGS="$LDFLAGS $ZDB_LIBS"
+])
+])
+
 AC_DEFUN([DM_SET_SQLITECREATE], [dnl
 	SQLITECREATE=`sed -e 's/\"/\\\"/g' -e 's/^/\"/' -e 's/$/\\\n\"/' -e '$!s/$/ \\\\/'  sql/sqlite/create_tables.sqlite`
 ])
@@ -302,12 +309,10 @@ AC_DEFUN([DM_CHECK_EVENT], [
 ])
 
 AC_DEFUN([DM_CHECK_SSL], [
-	AC_CHECK_HEADERS([openssl/ssl.h], [SSLLIB="-lssl"],[SSLLIB="failed"])
-	if test [ "x$SSLLIB" = "xfailed" ]; then
-		AC_MSG_ERROR([Could not find OPENSSL library.])
-	else
-		LDFLAGS="$LDFLAGS $SSLLIB"
-	fi
+PKG_CHECK_MODULES([SSL], [libssl], [dnl
+CFLAGS="$CFLAGS $SSL_CFLAGS"
+LDFLAGS="$LDFLAGS $SSL_LIBS"
+])
 ])
 
 AC_DEFUN([AC_COMPILE_WARNINGS],
@@ -333,81 +338,17 @@ unset ac_compile_warnings_opt
 ])
 
 AC_DEFUN([DM_CHECK_GLIB], [dnl
-AC_PATH_PROG(glibconfig,pkg-config)
-if test [ -z "$glibconfig" ]
-then
-	AC_MSG_ERROR([pkg-config executable not found. Make sure pkg-config is in your path])
-else
-	AC_MSG_CHECKING([GLib headers])
-	ac_glib_cflags=`${glibconfig} --cflags glib-2.0 --cflags gmodule-2.0`
-	if test -z "$ac_glib_cflags"
-	then
-		AC_MSG_RESULT([no])
-		AC_MSG_ERROR([Unable to locate glib development files])
-	fi
- 
-	CFLAGS="$CFLAGS $ac_glib_cflags"
-	AC_MSG_RESULT([$ac_glib_cflags])
-        AC_MSG_CHECKING([Glib libraries])
-	ac_glib_libs=`${glibconfig} --libs glib-2.0 --libs gmodule-2.0`
-	if test -z "$ac_glib_libs"
-	then
-		AC_MSG_RESULT([no])
-		AC_MSG_ERROR([Unable to locate glib libaries])
-	fi
- 	ac_glib_minvers="2.16"
-	AC_MSG_CHECKING([GLib version >= $ac_glib_minvers])
-	ac_glib_vers=`${glibconfig}  --atleast-version=$ac_glib_minvers glib-2.0 && echo yes`
-	if test -z "$ac_glib_vers"
-	then
-		AC_MSG_ERROR([At least GLib version $ac_glib_minvers is required.])
-	else
-		AC_MSG_RESULT([$ac_glib_vers])
-	fi
-
-
-	LDFLAGS="$LDFLAGS $ac_glib_libs"
-        AC_MSG_RESULT([$ac_glib_libs])
-fi
+PKG_CHECK_MODULES([GLIB], [glib-2.0 >= 2.16 gmodule-2.0 >= 2.16 gobject-2.0 >= 2.16 gthread-2.0 >= 2.16], [dnl
+CFLAGS="$CFLAGS $GLIB_CFLAGS"
+LDFLAGS="$LDFLAGS $GLIB_LIBS"
+])
 ])
 
 AC_DEFUN([DM_CHECK_GMIME], [dnl
-AC_PATH_PROG(gmimeconfig,pkg-config)
-if test [ -z "$gmimeconfig" ]
-then
-	AC_MSG_ERROR([pkg-config executable not found. Make sure pkg-config is in your path])
-else
-	AC_MSG_CHECKING([GMime headers])
-	ac_gmime_cflags=`${gmimeconfig} --cflags gmime-2.4`
-	if test -z "$ac_gmime_cflags"
-	then
-		AC_MSG_RESULT([no])
-		AC_MSG_ERROR([Unable to locate gmime development files])
-	else
-		CFLAGS="$CFLAGS $ac_gmime_cflags"
-		AC_MSG_RESULT([$ac_gmime_cflags])
-	fi
-	
-        AC_MSG_CHECKING([GMime libraries])
-	ac_gmime_libs=`${gmimeconfig} --libs gmime-2.4`
-	if test -z "$ac_gmime_libs"
-	then
-		AC_MSG_RESULT([no])
-		AC_MSG_ERROR([Unable to locate gmime libaries])
-	else
-		LDFLAGS="$LDFLAGS $ac_gmime_libs"
-        	AC_MSG_RESULT([$ac_gmime_libs])
-	fi
-	ac_gmime_minvers="2.4.6"
-	AC_MSG_CHECKING([GMime version >= $ac_gmime_minvers])
-	ac_gmime_vers=`${gmimeconfig}  --atleast-version=$ac_gmime_minvers gmime-2.4 && echo yes`
-	if test -z "$ac_gmime_vers"
-	then
-		AC_MSG_ERROR([At least GMime version $ac_gmime_minvers is required.])
-	else
-		AC_MSG_RESULT([$ac_gmime_vers])
-	fi
-fi
+PKG_CHECK_MODULES([GMIME], [gmime-2.4 >= 2.4.6], [dnl
+CFLAGS="$CFLAGS $GMIME_CFLAGS"
+LDFLAGS="$LDFLAGS $GMIME_LIBS"
+])
 ])
 
 AC_DEFUN([DM_PATH_CHECK],
