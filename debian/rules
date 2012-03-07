@@ -3,27 +3,13 @@
 include /usr/share/cdbs/1/rules/debhelper.mk
 include /usr/share/cdbs/1/class/autotools.mk
 
+# Add here any variable or target overrides you need.
+
 makebuilddir/dbmail::
 	mkdir -p m4
 	autoreconf --install
 
-
-
-# Add here any variable or target overrides you need.
+install/dbmail::
+	-rm debian/dbmail/usr/lib/dbmail/*.la
 
 DEB_CONFIGURE_EXTRA_FLAGS = --sysconfdir=/etc/dbmail --localstatedir=/var/run/dbmail --with-logdir=/var/log/dbmail --enable-shared=yes --enable-static=no --enable-manpages=yes --with-ldap --with-sieve
-
-#	dh_installinit -a --name=dbmail -- defaults 25
-#	dh_installcron -a --name=dbmail
-#	dh_installlogrotate -a --name=dbmail
-#	dh_installdebconf -a
-#	dh_installman -a
-#	dh_installdocs -a
-#	dh_installchangelogs -a debian/upstream.changelog
-#	## update examples
-#	(cd $(CURDIR) && find sql/sqlite/ sql/mysql/ sql/postgresql/ -type f && cat debian/dbmail.examples) | \
-#		sort|uniq>stamps/tmpfile && cat stamps/tmpfile > $(CURDIR)/debian/dbmail.examples
-#	rm -f stamps/tmpfile
-#	dh_installexamples -a
-#	dh_installdirs -A etc/dbmail var/log/dbmail usr/share/dbmail
-#	install -m 644 $(CURDIR)/debian/default.dbmail $(CURDIR)/debian/dbmail/usr/share/doc/dbmail/examples/default.dbmail
