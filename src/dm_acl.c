@@ -61,7 +61,6 @@ int acl_has_right(MailboxState_T S, u64_t userid, ACLRight_t right)
 	u64_t anyone_userid;
 	int test;
 	
-	MailboxState_reload(S);
 	switch(right) {
 		case ACL_RIGHT_SEEN:
 		case ACL_RIGHT_WRITE:
@@ -177,8 +176,10 @@ acl_replace_rights(u64_t userid, u64_t mboxid, const char *rights)
 	TRACE(TRACE_DEBUG, "replacing rights for user [%llu], mailbox [%llu] to %s", userid, mboxid, rightsstring);
 
 	// RFC 2086 to RFC 4314 mapping
-	if (strchr(rightsstring, (int) 'c')) rightsstring = g_strconcat(rightsstring, "k\0", NULL);
-	if (strchr(rightsstring, (int) 'd')) rightsstring = g_strconcat(rightsstring, "xte\0", NULL);
+	if (strchr(rightsstring, (int) 'c')) 
+		rightsstring = g_strconcat(rightsstring, "k\0", NULL);
+	if (strchr(rightsstring, (int) 'd'))
+		rightsstring = g_strconcat(rightsstring, "xte\0", NULL);
 
 	for (i = ACL_RIGHT_LOOKUP; i < ACL_RIGHT_NONE; i++) {
 
@@ -186,12 +187,13 @@ acl_replace_rights(u64_t userid, u64_t mboxid, const char *rights)
 			set = 1;
 		else
 			set = 0;
-		if (db_acl_set_right
-		    (userid, mboxid, acl_right_strings[i], set) < 0) {
+		if (db_acl_set_right(userid, mboxid, acl_right_strings[i], set) < 0) {
 			TRACE(TRACE_ERR, "error replacing ACL");
+			g_free(rightsstring);
 			return -1;
 		}
 	}
+	g_free(rightsstring);
 	return 1;
 
 }

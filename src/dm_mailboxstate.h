@@ -30,7 +30,6 @@ typedef struct T *T;
 extern T            MailboxState_new(u64_t id);
 
 extern int          MailboxState_preload(T);
-extern int          MailboxState_reload(T);
 extern void         MailboxState_remap(T);
 extern int          MailboxState_removeUid(T, u64_t);
 extern GTree *      MailboxState_getMsginfo(T);
@@ -61,6 +60,7 @@ extern unsigned     MailboxState_getPermission(T S);
 extern void         MailboxState_setName(T S, const char *name);
 extern const char * MailboxState_getName(T S);
 
+extern gboolean     MailboxState_isSubscribed(T);
 extern void         MailboxState_setIsUsers(T, gboolean);
 extern gboolean     MailboxState_isUsers(T);
 extern void         MailboxState_setIsPublic(T, gboolean);

@@ -74,28 +74,35 @@ void g_string_maybe_shrink(GString *s)
 int drop_privileges(char *newuser, char *newgroup)
 {
 	/* will drop running program's priviledges to newuser and newgroup */
-	struct passwd *pwd = NULL;
-	struct group *grp = NULL;
+	struct passwd pwd;
+	struct passwd *presult;
+	struct group grp;
+	struct group *gresult;
+	char buf[16384];
+	int s;
 
-	grp = getgrnam(newgroup);
+	memset(buf,0,sizeof(buf));
 
-	if (grp == NULL) {
-		TRACE(TRACE_ERR, "could not find group %s\n", newgroup);
+	s = getgrnam_r(newgroup, &grp, buf, sizeof(buf), &gresult);
+	if (gresult == NULL) {
+		if (s == 0)
+			TRACE(TRACE_ERR, "could not find group %s\n", newgroup);
 		return -1;
 	}
 
-	pwd = getpwnam(newuser);
-	if (pwd == NULL) {
-		TRACE(TRACE_ERR, "could not find user %s\n", newuser);
+	s = getpwnam_r(newuser, &pwd, buf, sizeof(buf), &presult);
+	if (presult == NULL) {
+		if (s == 0)
+			TRACE(TRACE_ERR, "could not find user %s\n", newuser);
 		return -1;
 	}
 
-	if (setgid(grp->gr_gid) != 0) {
+	if (setgid(grp.gr_gid) != 0) {
 		TRACE(TRACE_ERR, "could not set gid to %s\n", newgroup);
 		return -1;
 	}
 
-	if (setuid(pwd->pw_uid) != 0) {
+	if (setuid(pwd.pw_uid) != 0) {
 		TRACE(TRACE_ERR, "could not set uid to %s\n", newuser);
 		return -1;
 	}
@@ -886,7 +893,7 @@ char *date_sql2imap(const char *sqldate)
 char *date_imap2sql(const char *imapdate)
 {
 	struct tm tm;
-	char _sqldate[SQL_INTERNALDATE_LEN + 1] = SQL_STANDARD_DATE;
+	char _sqldate[SQL_INTERNALDATE_LEN + 1];
 	char *last_char;
 
 	// bsd needs this:
@@ -1857,6 +1864,7 @@ char * imap_get_envelope(GMimeMessage *message)
 	GList *list = NULL;
 	char *result;
 	char *s = NULL, *t = NULL;
+	const char *h;
 
 	if (! GMIME_IS_MESSAGE(message)) {
 		TRACE(TRACE_ERR, "argument is not a message");
@@ -1896,13 +1904,15 @@ char * imap_get_envelope(GMimeMessage *message)
 	/* from */
 	list = envelope_address_part(list, message, "From");
 	/* sender */
-	if (g_mime_object_get_header(GMIME_OBJECT(message),"Sender"))
+	h = g_mime_object_get_header(GMIME_OBJECT(message),"Sender");
+	if (h && (strlen(h) > 0))
 		list = envelope_address_part(list, message, "Sender");
 	else
 		list = envelope_address_part(list, message, "From");
 
 	/* reply-to */
-	if (g_mime_object_get_header(GMIME_OBJECT(message),"Reply-to"))
+	h = g_mime_object_get_header(GMIME_OBJECT(message),"Reply-to");
+	if (h && (strlen(h) > 0))
 		list = envelope_address_part(list, message, "Reply-to");
 	else
 		list = envelope_address_part(list, message, "From");
@@ -2264,7 +2274,7 @@ char * dm_get_hash_for_string(const char *buf)
 		else if (MATCH(hash_algorithm,"tiger"))
 			type=MHASH_TIGER;
 		else {
-			TRACE(TRACE_WARNING,"hash algorithm not supported. Using SHA1.");
+			TRACE(TRACE_INFO,"hash algorithm not supported. Using SHA1.");
 			type=MHASH_SHA1;
 		}
 		initialized=1;

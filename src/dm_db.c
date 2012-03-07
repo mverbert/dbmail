@@ -613,7 +613,7 @@ static const char * db_get_mysql_sql(sql_fragment_t frag)
 			return "UNIX_TIMESTAMP(%s)";
 		break;
 		case SQL_CURRENT_TIMESTAMP:
-			return "CURRENT_TIMESTAMP";
+			return "NOW()";
 		break;
 		case SQL_EXPIRE:
 			return "NOW() - INTERVAL %d DAY";
@@ -666,7 +666,7 @@ static const char * db_get_pgsql_sql(sql_fragment_t frag)
 			return "ROUND(DATE_PART('epoch',%s))";
 		break;
 		case SQL_CURRENT_TIMESTAMP:
-			return "CURRENT_TIMESTAMP";
+			return "NOW()";
 		break;
 		case SQL_EXPIRE:
 			return "NOW() - INTERVAL '%d DAY'";
@@ -1097,9 +1097,9 @@ int db_get_notify_address(u64_t user_idnr, char **notify_address)
 			if (query_result && (strlen(query_result) > 0)) {
 				*notify_address = g_strdup(query_result);
 				TRACE(TRACE_DEBUG, "notify address [%s]", *notify_address);
-				t = DM_SUCCESS;
 			}
 		}
+		t = DM_SUCCESS;
 	CATCH(SQLException)
 		LOG_SQLERROR;
 	FINALLY
@@ -1120,11 +1120,10 @@ int db_get_reply_body(u64_t user_idnr, char **reply_body)
 	TRY
 		s = db_stmt_prepare(c, "SELECT reply_body FROM %sauto_replies "
 				"WHERE user_idnr = ? "
-				"AND (start_date IS NULL OR start_date <= ?) "
-				"AND (stop_date IS NULL OR stop_date >= ?)", DBPFX);
+				"AND %s BETWEEN start_date AND stop_date", 
+				DBPFX,
+				db_get_sql(SQL_CURRENT_TIMESTAMP));
 		db_stmt_set_u64(s, 1, user_idnr);
-		db_stmt_set_str(s, 2, db_get_sql(SQL_CURRENT_TIMESTAMP));
-		db_stmt_set_str(s, 3, db_get_sql(SQL_CURRENT_TIMESTAMP));
 		r = db_stmt_query(s);
 		if (db_result_next(r)) {
 			query_result = db_result_get(r, 0);
@@ -1645,7 +1644,7 @@ int db_delete_mailbox(u64_t mailbox_idnr, int only_empty, int update_curmail_siz
 	return DM_SUCCESS;
 }
 
-char * db_get_message_lines(u64_t message_idnr, long lines, int no_end_dot)
+char * db_get_message_lines(u64_t message_idnr, long lines)
 {
 	DbmailMessage *msg;
 	
@@ -1681,22 +1680,18 @@ char * db_get_message_lines(u64_t message_idnr, long lines, int no_end_dot)
 
 	raw = t->str;
 	
-	if (lines > 0) {
+	if (lines >=0) {
 		while (raw[pos] && n < lines) {
 			if (raw[pos] == '\n') n++;
 			pos++;
 		}
-		if (pos) t = g_string_truncate(t,pos);
+		t = g_string_truncate(t,pos);
 	}
 
 	g_string_append(s, t->str);
 	g_string_free(t, TRUE);
 
-	/* delimiter */
-	if (no_end_dot == 0)
-		g_string_append(s, "\r\n.\r\n");
-
-	c = get_crlf_encoded(s->str);
+	c = get_crlf_encoded_dots(s->str);
 	g_string_free(s,TRUE);
 	return c;
 }
@@ -1995,17 +1990,14 @@ int db_findmailbox_by_regex(u64_t owner_idnr, const char *pattern, GList ** chil
 
 int mailbox_is_writable(u64_t mailbox_idnr)
 {
+	int result = TRUE;
 	MailboxState_T M = MailboxState_new(mailbox_idnr);
-	
-	MailboxState_reload(M);
 	if (MailboxState_getPermission(M) != IMAPPERM_READWRITE) {
-		MailboxState_free(&M);
 		TRACE(TRACE_INFO, "read-only mailbox");
-		return FALSE;
+		result = FALSE;
 	}
-
 	MailboxState_free(&M);
-	return TRUE;
+	return result;
 
 }
 
@@ -2095,7 +2087,7 @@ GList * db_imap_split_mailbox(const char *mailbox, u64_t owner_idnr, const char 
 
 		/* Prepend a mailbox struct onto the list. */
 		MailboxState_T M = MailboxState_new(mboxid);
-		MailboxState_setName(M, g_strdup(cpy));
+		MailboxState_setName(M, cpy);
 		MailboxState_setIsUsers(M, is_users);
 		MailboxState_setIsPublic(M, is_public);
 

@@ -451,6 +451,7 @@ static DbmailMessage * _mime_retrieve(DbmailMessage *self)
 	dbmail_message_set_internal_date(self, internal_date);
 	g_free(internal_date);
 	g_string_free(m,TRUE);
+	g_string_free(n,TRUE);
 	g_strfreev(blist);
 	return self;
 }
@@ -885,7 +886,7 @@ GTuples * dbmail_message_get_header_repeated(const DbmailMessage *self, const ch
 
 GList * dbmail_message_get_header_addresses(DbmailMessage *message, const char *field_name)
 {
-	InternetAddressList *ialisthead, *ialist;
+	InternetAddressList *ialist;
 	InternetAddress *ia;
 	GList *result = NULL;
 	const char *field_value;
@@ -896,7 +897,9 @@ GList * dbmail_message_get_header_addresses(DbmailMessage *message, const char *
 		return NULL; 
 	}
 
-	field_value = dbmail_message_get_header(message, field_name);
+	if ((field_value = dbmail_message_get_header(message, field_name)) == NULL)
+		return NULL;
+	
 	TRACE(TRACE_INFO, "mail address parser looking at field [%s] with value [%s]", field_name, field_value);
 	
 	if ((ialist = internet_address_list_parse_string(field_value)) == NULL) {
@@ -904,11 +907,14 @@ GList * dbmail_message_get_header_addresses(DbmailMessage *message, const char *
 		return NULL;
 	}
 
-	ialisthead = ialist;
 	i = internet_address_list_length(ialist);
 	for (j=0; j<i; j++) {
+		char *a;
 		ia = internet_address_list_get_address(ialist, j);
-		result = g_list_append(result, g_strdup(internet_address_mailbox_get_addr((InternetAddressMailbox *)ia)));
+		if ((a = internet_address_mailbox_get_addr((InternetAddressMailbox *)ia)) != NULL) {;
+			TRACE(TRACE_DEBUG, "mail address parser found [%s]", a);
+			result = g_list_append(result, g_strdup(a));
+		}
 	}
 	g_object_unref(ialist);
 
@@ -1166,6 +1172,9 @@ int dbmail_message_store(DbmailMessage *self)
 				usleep(delay*i);
 				continue;
 			}
+
+			dbmail_message_cache_envelope(self);
+
 			step++;
 		}
 		
@@ -1297,8 +1306,8 @@ int dbmail_message_cache_headers(const DbmailMessage *self)
 
 	g_tree_foreach(self->header_name, (GTraverseFunc)_header_cache, (gpointer)self);
 	
+	/* not all messages have a references field or a in-reply-to field */
 	dbmail_message_cache_referencesfield(self);
-	dbmail_message_cache_envelope(self);
 
 	return DM_SUCCESS;
 }
@@ -1981,7 +1990,6 @@ dsn_class_t sort_deliver_to_mailbox(DbmailMessage *message,
 		TRACE(TRACE_DEBUG, "Checking if we have the right to post incoming messages");
         
 		MailboxState_T S = MailboxState_new(mboxidnr);
-		MailboxState_reload(S);
 		permission = acl_has_right(S, useridnr, ACL_RIGHT_POST);
 		MailboxState_free(&S);
 		
@@ -2201,24 +2209,26 @@ static int valid_sender(const char *addr)
 
 static int check_destination(DbmailMessage *message, GList *aliases)
 {
-	GList *to, *cc, *recipients;
+	GList *to, *cc, *recipients = NULL;
 	to = dbmail_message_get_header_addresses(message, "To");
 	cc = dbmail_message_get_header_addresses(message, "Cc");
+
 	recipients = g_list_concat(to, cc);
-	if (! recipients)
-		TRACE(TRACE_DEBUG, "no recipients??");
 
 	while (recipients) {
 		char *addr = (char *)recipients->data;
-		aliases = g_list_first(aliases);
-		while (aliases) {
-			char *alias = (char *)aliases->data;
-			if (MATCH(alias, addr)) {
-				TRACE(TRACE_DEBUG, "valid alias found as recipient [%s]", alias);
-				return TRUE;
+
+		if (addr) {
+			aliases = g_list_first(aliases);
+			while (aliases) {
+				char *alias = (char *)aliases->data;
+				if (MATCH(alias, addr)) {
+					TRACE(TRACE_DEBUG, "valid alias found as recipient [%s]", alias);
+					return TRUE;
+				}
+				if (! g_list_next(aliases)) break;
+				aliases = g_list_next(aliases);
 			}
-			if (! g_list_next(aliases)) break;
-			aliases = g_list_next(aliases);
 		}
 		if (! g_list_next(recipients)) break;
 		recipients = g_list_next(recipients);
@@ -2381,7 +2391,7 @@ static int execute_auto_ran(DbmailMessage *message, u64_t useridnr)
 		TRACE(TRACE_DEBUG, "starting auto-reply procedure");
 
 		if (db_get_reply_body(useridnr, &reply_body) != 0)
-			TRACE(TRACE_ERR, "error fetching reply body");
+			TRACE(TRACE_DEBUG, "no reply body found");
 		else {
 			if (reply_body == NULL || reply_body[0] == '\0')
 				TRACE(TRACE_DEBUG, "no reply body specified, skipping");
