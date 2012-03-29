@@ -2600,7 +2600,7 @@ static u64_t message_get_size(u64_t message_idnr)
 }
 
 int db_copymsg(u64_t msg_idnr, u64_t mailbox_to, u64_t user_idnr,
-	       u64_t * newmsg_idnr)
+	       u64_t * newmsg_idnr, gboolean recent)
 {
 	C c; R r;
 	u64_t msgsize;
@@ -2634,14 +2634,14 @@ int db_copymsg(u64_t msg_idnr, u64_t mailbox_to, u64_t user_idnr,
 		if (_db_params.db_driver == DM_DRIVER_ORACLE) {
 			db_exec(c, "INSERT INTO %smessages ("
 				"mailbox_idnr,physmessage_id,seen_flag,answered_flag,deleted_flag,flagged_flag,recent_flag,draft_flag,unique_id,status)"
-				" SELECT %llu,physmessage_id,seen_flag,answered_flag,deleted_flag,flagged_flag,1,draft_flag,'%s',status"
-				" FROM %smessages WHERE message_idnr = %llu %s",DBPFX, mailbox_to, unique_id,DBPFX, msg_idnr, frag);
+				" SELECT %llu,physmessage_id,seen_flag,answered_flag,deleted_flag,flagged_flag,%d,draft_flag,'%s',status"
+				" FROM %smessages WHERE message_idnr = %llu %s",DBPFX, mailbox_to, recent, unique_id, DBPFX, msg_idnr, frag);
 			*newmsg_idnr = db_get_pk(c, "messages");
 		} else {
 			r = db_query(c, "INSERT INTO %smessages ("
 				"mailbox_idnr,physmessage_id,seen_flag,answered_flag,deleted_flag,flagged_flag,recent_flag,draft_flag,unique_id,status)"
-				" SELECT %llu,physmessage_id,seen_flag,answered_flag,deleted_flag,flagged_flag,1,draft_flag,'%s',status"
-				" FROM %smessages WHERE message_idnr = %llu %s",DBPFX, mailbox_to, unique_id,DBPFX, msg_idnr, frag);
+				" SELECT %llu,physmessage_id,seen_flag,answered_flag,deleted_flag,flagged_flag,%d,draft_flag,'%s',status"
+				" FROM %smessages WHERE message_idnr = %llu %s",DBPFX, mailbox_to, recent, unique_id, DBPFX, msg_idnr, frag);
 			*newmsg_idnr = db_insert_result(c, r);
 		}
 		db_commit_transaction(c);
@@ -2877,6 +2877,8 @@ int db_set_msgflag(u64_t msg_idnr, int *flags, GList *keywords, int action_type,
 	pos += snprintf(query, DEF_QUERYSIZE, "UPDATE %smessages SET ", DBPFX);
 
 	for (i = 0; i < IMAP_NFLAGS; i++) {
+		if (flags[i])
+			TRACE(TRACE_DEBUG,"set %s", db_flag_desc[i]);
 
 		switch (action_type) {
 		case IMAPFA_ADD:
@@ -2898,7 +2900,7 @@ int db_set_msgflag(u64_t msg_idnr, int *flags, GList *keywords, int action_type,
 			if (flags[i]) {
 				if (msginfo && msginfo->flags) msginfo->flags[i] = 1;
 				pos += snprintf(query + pos, DEF_QUERYSIZE - pos, "%s%s=1", seen?",":"", db_flag_desc[i]); 
-			} else {
+			} else if (i != IMAP_FLAG_RECENT) {
 				if (msginfo && msginfo->flags) msginfo->flags[i] = 0;
 				pos += snprintf(query + pos, DEF_QUERYSIZE - pos, "%s%s=0", seen?",":"", db_flag_desc[i]); 
 			}
@@ -3598,33 +3600,29 @@ int db_rehash_store(void)
 	return t;
 }
 
-int db_append_msg(const char *msgdata, u64_t mailbox_idnr, u64_t user_idnr, timestring_t internal_date, u64_t * msg_idnr)
+int db_append_msg(const char *msgdata, u64_t mailbox_idnr, u64_t user_idnr,
+		char* internal_date, u64_t * msg_idnr, gboolean recent)
 {
         DbmailMessage *message;
 	int result;
+	char *date = NULL;
 	GString *msgdata_string;
 
 	if (! mailbox_is_writable(mailbox_idnr)) return DM_EQUERY;
 
-	msgdata_string = g_string_new("");
-	g_string_printf(msgdata_string, "%s", msgdata);
+	msgdata_string = g_string_new(msgdata);
 
         message = dbmail_message_new();
         message = dbmail_message_init_with_string(message, msgdata_string);
 	dbmail_message_set_internal_date(message, (char *)internal_date);
 	g_string_free(msgdata_string, TRUE); 
         
-	/* 
-         * according to the rfc, the recent flag has to be set to '1'.
-	 * this also means that the status will be set to '001'
-         */
-
         if (dbmail_message_store(message) < 0) {
 		dbmail_message_free(message);
 		return DM_EQUERY;
 	}
 
-	result = db_copymsg(message->id, mailbox_idnr, user_idnr, msg_idnr);
+	result = db_copymsg(message->id, mailbox_idnr, user_idnr, msg_idnr, recent);
 	db_delete_message(message->id);
         dbmail_message_free(message);
 	

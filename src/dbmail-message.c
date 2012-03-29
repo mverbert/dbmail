@@ -48,6 +48,10 @@ extern db_param_t _db_params;
 static void _register_header(const char *header, const char *value, gpointer user_data);
 static gboolean _header_cache(const char *header, const char *value, gpointer user_data);
 
+static gboolean _header_insert(u64_t physmessage_id, u64_t headername_id, u64_t headervalue_id);
+static int _header_name_get_id(const DbmailMessage *self, const char *header, u64_t *id);
+static int _header_value_get_id(const char *value, const char *sortfield, const char *datefield, u64_t *id);
+
 static DbmailMessage * _retrieve(DbmailMessage *self, const char *query_template);
 static void _map_headers(DbmailMessage *self);
 static int _message_insert(DbmailMessage *self, 
@@ -731,6 +735,7 @@ DbmailMessage * dbmail_message_init_with_string(DbmailMessage *self, const GStri
 		if ((end = g_strstr_len(str->str, 80, "\n"))) {
 			size_t l = end - str->str;
 			from = g_strndup(str->str, l);
+			TRACE(TRACE_DEBUG, "From_ [%s]", from);
 		}
 	}
 
@@ -823,10 +828,19 @@ u64_t dbmail_message_get_physid(const DbmailMessage *self)
 
 void dbmail_message_set_internal_date(DbmailMessage *self, char *internal_date)
 {
-	if (internal_date && strlen(internal_date))
-		self->internal_date = g_mime_utils_header_decode_date(internal_date, self->internal_date_gmtoff);
-	else
-		self->internal_date = time(NULL);
+	self->internal_date = time(NULL);
+	if (internal_date && strlen(internal_date)) {
+		time_t dt;
+	        if ((dt = g_mime_utils_header_decode_date(
+						internal_date,
+						&(self->internal_date_gmtoff)))) {
+			self->internal_date = dt;
+		}
+		TRACE(TRACE_DEBUG, "internal_date [%s] [%ld] offset [%d]",
+				internal_date,
+				self->internal_date,
+				self->internal_date_gmtoff);
+	}
 }
 
 /* thisyear is a workaround for some broken gmime version. */
@@ -836,16 +850,16 @@ gchar * dbmail_message_get_internal_date(const DbmailMessage *self, int thisyear
 	struct tm gmt;
 	assert(self->internal_date);
 	
-	res = g_new0(char, TIMESTRING_SIZE+1);
 	memset(&gmt,'\0', sizeof(struct tm));
 	gmtime_r(&self->internal_date, &gmt);
 
 	/* override if the date is not sane */
-	if (thisyear && gmt.tm_year + 1900 > thisyear + 1) {
+	if (thisyear && ((gmt.tm_year + 1900) > (thisyear + 1)))
 		gmt.tm_year = thisyear - 1900;
-	}
 
+	res = g_new0(char, TIMESTRING_SIZE+1);
 	strftime(res, TIMESTRING_SIZE, "%Y-%m-%d %T", &gmt);
+
 	return res;
 }
 
@@ -909,7 +923,7 @@ GList * dbmail_message_get_header_addresses(DbmailMessage *message, const char *
 
 	i = internet_address_list_length(ialist);
 	for (j=0; j<i; j++) {
-		char *a;
+		const char *a;
 		ia = internet_address_list_get_address(ialist, j);
 		if ((a = internet_address_mailbox_get_addr((InternetAddressMailbox *)ia)) != NULL) {;
 			TRACE(TRACE_DEBUG, "mail address parser found [%s]", a);
@@ -996,6 +1010,10 @@ static DbmailMessage * _retrieve(DbmailMessage *self, const char *query_template
 	if ((self = _mime_retrieve(self)))
 		return self;
 
+	/* 
+	 * _mime_retrieve failed. Fall back to messageblks
+	 * interface
+	 */
 	self = store;
 
 	date2char_str("p.internal_date", &frag);
@@ -1023,12 +1041,9 @@ static DbmailMessage * _retrieve(DbmailMessage *self, const char *query_template
 	db_con_close(c);
 	
 	self = dbmail_message_init_with_string(self,m);
-	if (internal_date && strlen(internal_date))
-		dbmail_message_set_internal_date(self, internal_date);
+	dbmail_message_set_internal_date(self, internal_date);
 
-	if (internal_date)
-		g_free(internal_date);
-
+	if (internal_date) g_free(internal_date);
 	g_string_free(m,TRUE);
 
 	return self;
@@ -1207,17 +1222,22 @@ static void insert_physmessage(DbmailMessage *self, C c)
 		char2date_str(internal_date, &to_date_str);
 		g_free(internal_date);
 		if (_db_params.db_driver == DM_DRIVER_ORACLE) 
-			db_exec(c, "INSERT INTO %sphysmessage (internal_date) VALUES (%s) %s", DBPFX, &to_date_str, frag);
+			db_exec(c, "INSERT INTO %sphysmessage (internal_date) VALUES (%s) %s",
+					DBPFX, &to_date_str, frag);
 		else 
-			r = db_query(c, "INSERT INTO %sphysmessage (internal_date) VALUES (%s) %s", DBPFX, &to_date_str, frag);
-		g_free(frag);	
+			r = db_query(c, "INSERT INTO %sphysmessage (internal_date) VALUES (%s) %s",
+					DBPFX, &to_date_str, frag);
 	} else {
 		if (_db_params.db_driver == DM_DRIVER_ORACLE) 
-			db_exec(c, "INSERT INTO %sphysmessage (internal_date) VALUES (%s) %s", DBPFX, db_get_sql(SQL_CURRENT_TIMESTAMP), frag);
+			db_exec(c, "INSERT INTO %sphysmessage (internal_date) VALUES (%s) %s",
+					DBPFX, db_get_sql(SQL_CURRENT_TIMESTAMP), frag);
 		else
-			r = db_query(c, "INSERT INTO %sphysmessage (internal_date) VALUES (%s) %s", DBPFX, db_get_sql(SQL_CURRENT_TIMESTAMP), frag);
-		g_free(frag);	
+			r = db_query(c, "INSERT INTO %sphysmessage (internal_date) VALUES (%s) %s",
+					DBPFX, db_get_sql(SQL_CURRENT_TIMESTAMP), frag);
 	}
+
+	g_free(frag);	
+
 	if (_db_params.db_driver == DM_DRIVER_ORACLE)
 		id = db_get_pk(c, "physmessage");
 	else
@@ -1294,6 +1314,39 @@ int _message_insert(DbmailMessage *self,
 	return t;
 }
 
+#define CACHE_WIDTH 255
+
+void _message_cache_envelope_date(const DbmailMessage *self)
+{
+	time_t date = self->internal_date;
+	char *value, *datefield, *sortfield;
+	u64_t headervalue_id;
+	u64_t headername_id;
+
+	value = g_mime_utils_header_format_date(
+			self->internal_date, 
+			self->internal_date_gmtoff);
+
+	sortfield = g_new0(char, CACHE_WIDTH+1);
+	strftime(sortfield, CACHE_WIDTH, "%Y-%m-%d %H:%M:%S", gmtime(&date));
+
+	if (self->internal_date_gmtoff)
+		date += (self->internal_date_gmtoff * 36);
+
+	datefield = g_new0(gchar, 20);
+	strftime(datefield, 20, "%Y-%m-%d", gmtime(&date));
+
+	_header_name_get_id(self, "Date", &headername_id);
+	_header_value_get_id(value, sortfield, datefield, &headervalue_id);
+
+	if (headervalue_id && headername_id)
+		_header_insert(self->physid, headername_id, headervalue_id);
+
+	g_free(value);
+	g_free(sortfield);
+	g_free(datefield);
+}
+
 int dbmail_message_cache_headers(const DbmailMessage *self)
 {
 	assert(self);
@@ -1304,15 +1357,30 @@ int dbmail_message_cache_headers(const DbmailMessage *self)
 		return -1;
 	}
 
-	g_tree_foreach(self->header_name, (GTraverseFunc)_header_cache, (gpointer)self);
+	/* 
+	 * store all headers as-is, plus separate copies for
+	 * searching and sorting
+	 * 
+	 * */
+	g_tree_foreach(self->header_name,
+			(GTraverseFunc)_header_cache, (gpointer)self);
+
+	/* 
+	 * if there is no Date: header, store the envelope's date
+	 * 
+	 * */
+	if (! dbmail_message_get_header(self, "Date"))
+		_message_cache_envelope_date(self);
 	
-	/* not all messages have a references field or a in-reply-to field */
+	/* 
+	 * not all messages have a references field or a in-reply-to field 
+	 *
+	 * */
 	dbmail_message_cache_referencesfield(self);
 
 	return DM_SUCCESS;
 }
 
-#define CACHE_WIDTH 255
 
 
 static int _header_name_get_id(const DbmailMessage *self, const char *header, u64_t *id)
@@ -1502,7 +1570,48 @@ static gboolean _header_insert(u64_t physmessage_id, u64_t headername_id, u64_t 
 	return t;
 }
 
-	
+static GString * _header_addresses(InternetAddressList *ialist)
+{
+	int i,j;
+	InternetAddress *ia;
+	GString *store = g_string_new("");
+
+	i = internet_address_list_length(ialist);
+	for (j=0; j<i; j++) {
+		ia = internet_address_list_get_address(ialist, j);
+		if(ia == NULL) break;
+
+		if (internet_address_group_get_members((InternetAddressGroup *)ia)) {
+
+			if (j>0) g_string_append(store, " ");
+
+			GString *group;
+			g_string_append_printf(store, "%s:", internet_address_get_name(ia));
+			group = _header_addresses(internet_address_group_get_members((InternetAddressGroup *)ia));
+			if (group->len > 0)
+				g_string_append_printf(store, " %s", group->str);
+			g_string_free(group, TRUE);
+			g_string_append(store, ";");
+		} else {
+
+			if (j>0)
+				g_string_append(store, ", ");
+
+			const char *name = internet_address_get_name(ia);
+			const char *addr = internet_address_mailbox_get_addr((InternetAddressMailbox *)ia);
+
+			if (name)
+				g_string_append_printf(store, "%s ", name);
+			if (addr)
+				g_string_append_printf(store, "%s%s%s", 
+						name?"<":"", 
+						addr,
+						name?">":"");
+		}
+	}
+	return store;
+}
+
 static gboolean _header_cache(const char UNUSED *key, const char *header, gpointer user_data)
 {
 	u64_t headername_id;
@@ -1560,20 +1669,37 @@ static gboolean _header_cache(const char UNUSED *key, const char *header, gpoint
 
 		// Generate additional fields for SORT optimization
 		if(isaddr) {
+			GString *store;
 			int i,j=0;
 			emaillist = internet_address_list_parse_string(value);
+			store = _header_addresses(emaillist);
+
 			i = internet_address_list_length(emaillist);
 			for (j=0; j<i; j++) {
 	                        ia = internet_address_list_get_address(emaillist, j);
 				if(ia == NULL) break;
 
+
 				if(sortfield == NULL) {
 					// Only the first email recipient is to be used for sorting - so save it now.
-					const char *addr = internet_address_mailbox_get_addr((InternetAddressMailbox *)ia);
-					sortfield = g_strndup(addr ? addr : "", CACHE_WIDTH);
+					const char *addr;
+				       
+					if (internet_address_group_get_members((InternetAddressGroup *)ia)) {
+						addr = internet_address_get_name(ia);
+						sortfield = g_strndup(addr ? addr : "", CACHE_WIDTH);
+					} else {
+						addr = internet_address_mailbox_get_addr((InternetAddressMailbox *)ia);
+						gchar **parts = g_strsplit(addr, "@",2);
+						sortfield = g_strndup(parts[0]?parts[0]:"", CACHE_WIDTH);
+						g_strfreev(parts);
+					}
 				}
 			}
 			g_object_unref(emaillist);
+			g_free(value);
+
+			value = store->str;
+			g_string_free(store, FALSE);
 		}
 
 		if(issubject) {
@@ -1583,13 +1709,17 @@ static gboolean _header_cache(const char UNUSED *key, const char *header, gpoint
 		}
 
 		if(isdate) {
-			date = g_mime_utils_header_decode_date(value,NULL);
-			if (date == (time_t)-1)
-				date = (time_t)0;
+			int offset;
+			date = g_mime_utils_header_decode_date(value,&offset);
+			sortfield = g_new0(char, CACHE_WIDTH+1);
+			strftime(sortfield, CACHE_WIDTH, "%Y-%m-%d %H:%M:%S", gmtime(&date));
 
+			date += (offset * 36); // +0200 -> offset 200
 			datefield = g_new0(gchar,20);
-			strftime(datefield,20,"%Y-%m-%d %H:%M:%S",gmtime(&date));
-			TRACE(TRACE_DEBUG,"Date is [%ld], datefield [%s]",date,datefield);
+			strftime(datefield,20,"%Y-%m-%d", gmtime(&date));
+
+			TRACE(TRACE_DEBUG,"Date is [%s] offset [%d], datefield [%s]",
+					value, offset, datefield);
 		}
 
 		if (! sortfield)
@@ -2031,7 +2161,7 @@ dsn_class_t sort_deliver_to_mailbox(DbmailMessage *message,
 	}
 
 	// Ok, we have the ACL right, time to deliver the message.
-	switch (db_copymsg(message->id, mboxidnr, useridnr, &newmsgidnr)) {
+	switch (db_copymsg(message->id, mboxidnr, useridnr, &newmsgidnr, TRUE)) {
 	case -2:
 		TRACE(TRACE_ERR, "error copying message to user [%llu],"
 				"maxmail exceeded", useridnr);
@@ -2290,6 +2420,8 @@ static int send_reply(DbmailMessage *message, const char *body, GList *aliases)
 	DbmailMessage *new_message = dbmail_message_new();
 	new_message = dbmail_message_construct(new_message, to, from, newsubject, body);
 	dbmail_message_set_header(new_message, "X-DBMail-Reply", from);
+	dbmail_message_set_header(new_message, "Precedence", "bulk");
+	dbmail_message_set_header(new_message, "Auto-Submitted", "auto-replied");
 
 	result = send_mail(new_message, to, from, NULL, SENDMESSAGE, SENDMAIL);
 

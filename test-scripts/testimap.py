@@ -158,7 +158,7 @@ class testImapServer(unittest.TestCase):
                           TESTMSG['strict822'].get_payload())
 
         result = self.o.fetch(id, "(FLAGS)")
-        expect = '1 (FLAGS (\\Seen \\Flagged Userflag))'
+        expect = '1 (FLAGS (\\Seen \\Flagged \\Recent Userflag))'
         self.assertEquals(result[1][0], expect)
 
     def testCheck(self):
@@ -350,8 +350,8 @@ class testImapServer(unittest.TestCase):
         self.assertEquals(self.o.fetch("1:*", "(Flags)")[0], 'OK')
 
         # bogus ranges
-        self.assertEquals(self.o.fetch("-10:10", "(Flags)")[0], 'OK')
-        self.assertEquals(self.o.fetch("10:-10", "(Flags)")[0], 'OK')
+        self.failUnlessRaises(Exception, self.o.fetch, "-10:10", "(Flags)")
+        self.failUnlessRaises(Exception, self.o.fetch, "10:-10", "(Flags)")
 
     def testGetacl(self):
         """

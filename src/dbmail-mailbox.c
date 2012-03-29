@@ -96,13 +96,15 @@ static gchar * _message_get_envelope_date(const DbmailMessage *self)
 {
 	char *res;
 	struct tm gmt;
+
 	assert(self->internal_date);
 	
-	res = g_new0(char, TIMESTRING_SIZE+1);
-	memset(&gmt,'\0', sizeof(struct tm));
+	memset(&gmt,0, sizeof(struct tm));
 	gmtime_r(&self->internal_date, &gmt);
 
+	res = g_new0(char, TIMESTRING_SIZE+1);
 	strftime(res, TIMESTRING_SIZE, "%a %b %d %H:%M:%S %Y", &gmt);
+
 	return res;
 }
 
@@ -546,8 +548,13 @@ static int _handle_sort_args(DbmailMailbox *self, char **search_keys, search_key
 	} 
 	
 	else if ( MATCH(key, "date") ) {
-		_append_join(value->table, "datefield");
-		_append_sort(value->order, "datefield", reverse);
+		char *tmp = g_strdup_printf("LEFT JOIN dbmail_header h ON m.physmessage_id=h.physmessage_id "
+				"LEFT JOIN dbmail_headername n ON h.headername_id = n.id "
+				"LEFT JOIN dbmail_headervalue v ON v.id=h.headervalue_id ");
+		g_strlcat(value->table, tmp, MAX_SEARCH_LEN);
+		g_free(tmp);
+
+		_append_sort(value->order, "sortfield", reverse);
 		(*idx)++;
 	}	
 
@@ -601,6 +608,8 @@ static int _handle_search_args(DbmailMailbox *self, char **search_keys, u64_t *i
 	
 	/* SEARCH */
 
+	TRACE(TRACE_DEBUG, "key [%s]", key);
+
 	if ( MATCH(key, "all") ) {
 		value->type = IST_UIDSET;
 		strcpy(value->search, "1:*");
@@ -646,13 +655,6 @@ static int _handle_search_args(DbmailMailbox *self, char **search_keys, u64_t *i
 		strncpy(value->search, "seen_flag=1", MAX_SEARCH_LEN);
 		(*idx)++;
 		
-	} else if ( MATCH(key, "keyword") ) {
-		g_return_val_if_fail(search_keys[*idx + 1], -1);
-		value->type = IST_SET;
-		(*idx)++;
-		strcpy(value->search, "0");
-		(*idx)++;
-		
 	} else if ( MATCH(key, "draft") ) {
 		value->type = IST_FLAG;
 		strncpy(value->search, "draft_flag=1", MAX_SEARCH_LEN);
@@ -688,13 +690,6 @@ static int _handle_search_args(DbmailMailbox *self, char **search_keys, u64_t *i
 		strncpy(value->search, "seen_flag=0", MAX_SEARCH_LEN);
 		(*idx)++;
 	
-	} else if ( MATCH(key, "unkeyword") ) {
-		g_return_val_if_fail(search_keys[(*idx) + 1],-1);
-		value->type = IST_SET;
-		(*idx)++;
-		strcpy(value->search, "1:*");
-		(*idx)++;
-	
 	} else if ( MATCH(key, "undraft") ) {
 		value->type = IST_FLAG;
 		strncpy(value->search, "draft_flag=0", MAX_SEARCH_LEN);
@@ -702,9 +697,6 @@ static int _handle_search_args(DbmailMailbox *self, char **search_keys, u64_t *i
 	
 	}
 
-	/*
-	 * HEADER search keys
-	 */
 #define IMAP_SET_SEARCH		(*idx)++; \
 		if ((p = dbmail_iconv_str_to_db((const char *)search_keys[*idx], self->charset)) == NULL) {  \
 			TRACE(TRACE_WARNING, "search_key [%s] is not charset [%s]", search_keys[*idx], self->charset); \
@@ -715,6 +707,25 @@ static int _handle_search_args(DbmailMailbox *self, char **search_keys, u64_t *i
 		g_free(p); \
 		(*idx)++
 	
+	/* 
+	 * keyword search
+	 */
+
+	else if ( MATCH(key, "keyword") ) {
+		g_return_val_if_fail(search_keys[*idx + 1], -1);
+		value->type = IST_KEYWORD;
+		IMAP_SET_SEARCH;
+	}
+
+	else if ( MATCH(key, "unkeyword") ) {
+		g_return_val_if_fail(search_keys[*idx + 1], -1);
+		value->type = IST_UNKEYWORD;
+		IMAP_SET_SEARCH;
+	}
+
+	/*
+	 * HEADER search keys
+	 */
 	else if ( MATCH(key, "bcc") ) {
 		g_return_val_if_fail(search_keys[*idx + 1], -1);
 		value->type = IST_HDR;
@@ -949,6 +960,7 @@ static int _handle_search_args(DbmailMailbox *self, char **search_keys, u64_t *i
 	/* ignore the charset. Let the database handle this */
         } else if ( MATCH(key, "charset") )  {
                 (*idx)++;// FIXME: check for valid charset here
+		if (self->charset) g_free(self->charset);
 		self->charset = g_strdup(search_keys[*idx]);
 		TRACE(TRACE_DEBUG,"using charset [%s] for searching", self->charset);
                 (*idx)++; 
@@ -1271,7 +1283,7 @@ static GTree * mailbox_search(DbmailMailbox *self, search_key_t *s)
 				"LEFT JOIN %sphysmessage p ON m.physmessage_id = p.id "
 				"WHERE m.mailbox_idnr = ? AND m.status IN (?,?) "
 				"%s "
-				"AND p.messagesize %c ? "
+				"AND p.rfcsize %c ? "
 				"ORDER BY message_idnr", 
 				DBPFX, DBPFX, 
 				inset?inset:"",
@@ -1282,6 +1294,24 @@ static GTree * mailbox_search(DbmailMailbox *self, search_key_t *s)
 			db_stmt_set_int(st, 2, MESSAGE_STATUS_NEW);
 			db_stmt_set_int(st, 3, MESSAGE_STATUS_SEEN);
 			db_stmt_set_u64(st, 4, s->size);
+
+			break;
+
+			case IST_KEYWORD:
+			case IST_UNKEYWORD:
+			g_string_printf(q, "SELECT m.message_idnr FROM %smessages m "
+					"JOIN %skeywords k ON m.message_idnr=k.message_idnr "
+					"WHERE mailbox_idnr=? AND status IN (?,?) "
+					"%s "
+					"AND k.keyword = ? ORDER BY message_idnr",
+					DBPFX, DBPFX, 
+					inset?inset:"");
+
+			st = db_stmt_prepare(c,q->str);
+			db_stmt_set_u64(st, 1, dbmail_mailbox_get_id(self));
+			db_stmt_set_int(st, 2, MESSAGE_STATUS_NEW);
+			db_stmt_set_int(st, 3, MESSAGE_STATUS_SEEN);
+			db_stmt_set_str(st, 4, s->search);
 
 			break;
 
@@ -1311,7 +1341,7 @@ static GTree * mailbox_search(DbmailMailbox *self, search_key_t *s)
 				continue;
 			}
 			assert(w);
-			
+
 			k = g_new0(u64_t,1);
 			v = g_new0(u64_t,1);
 			*k = id;
@@ -1319,6 +1349,51 @@ static GTree * mailbox_search(DbmailMailbox *self, search_key_t *s)
 
 			g_tree_insert(s->found, k, v);
 		}
+
+		if (s->type == IST_UNKEYWORD) {
+			GTree *old = NULL;
+			GTree *invert = g_tree_new_full((GCompareDataFunc)ucmpdata,NULL,(GDestroyNotify)g_free, (GDestroyNotify)g_free);
+			GList *uids = g_tree_keys(ids);
+			uids = g_list_first(uids);
+			while (uids) {
+				u64_t id = *(u64_t *)uids->data;
+				if (! (w = g_tree_lookup(ids, &id))) {
+					TRACE(TRACE_ERR, "key missing in ids: [%llu]", id);
+
+					if (! g_list_next(uids)) break;
+					uids = g_list_next(uids);
+					continue;
+				}
+
+				assert(w);
+
+				if (g_tree_lookup(s->found, &id)) {
+					TRACE(TRACE_DEBUG, "skip key [%llu]", id);
+
+					if (! g_list_next(uids)) break;
+					uids = g_list_next(uids);
+					continue;
+				}
+
+				k = g_new0(u64_t,1);
+				v = g_new0(u64_t,1);
+				*k = id;
+				*v = *w;
+
+				g_tree_insert(invert, k, v);
+
+
+				if (! g_list_next(uids)) break;
+				uids = g_list_next(uids);
+
+			}
+
+			old = s->found;
+			s->found = invert;
+			g_tree_destroy(old);
+			g_list_free(g_list_first(uids));
+		}
+
 	CATCH(SQLException)
 		LOG_SQLERROR;
 	FINALLY
@@ -1385,36 +1460,39 @@ GTree * dbmail_mailbox_get_set(DbmailMailbox *self, const char *set, gboolean ui
 	GTree *a, *b, *c;
 	gboolean error = FALSE;
 	
-	b = g_tree_new_full((GCompareDataFunc)ucmpdata,NULL, (GDestroyNotify)g_free, (GDestroyNotify)g_free);
+	TRACE(TRACE_DEBUG, "[%s] uid [%d]", set, uid);
+
 
 	if (! self->mbstate)
-		return b;
-
+		return NULL;
 
 	assert (self && self->mbstate && set);
 
-	if (MailboxState_getExists(self->mbstate) == 0) // empty mailbox
-		return b;
+	if ((! uid ) && (MailboxState_getExists(self->mbstate) == 0)) // empty mailbox
+		return NULL;
 
+	b = g_tree_new_full((GCompareDataFunc)ucmpdata,NULL, (GDestroyNotify)g_free, (GDestroyNotify)g_free);
 	maxmsn = MailboxState_getExists(self->mbstate);
 	uids = MailboxState_getIds(self->mbstate);
 	ids = g_tree_keys(uids);
-	assert(ids);
-	ids = g_list_last(ids);
-	hi = *((u64_t *)ids->data);
-	ids = g_list_first(ids);
-	lo = *((u64_t *)ids->data);
-	g_list_free(g_list_first(ids));
+	if (ids) {
+		ids = g_list_last(ids);
+		hi = *((u64_t *)ids->data);
+		ids = g_list_first(ids);
+		lo = *((u64_t *)ids->data);
+		g_list_free(g_list_first(ids));
+	}
+
+	a = g_tree_new_full((GCompareDataFunc)ucmpdata,NULL, (GDestroyNotify)g_free, (GDestroyNotify)g_free);
 
 	if (! uid) {
 		lo = 1;
 		hi = maxmsn;
 		if (hi != (u64_t)g_tree_nnodes(uids))
 			TRACE(TRACE_WARNING, "[%p] mailbox info out of sync: exists [%llu] ids [%u]", 
-				self->mbstate, hi, g_tree_nnodes(uids));
+					self->mbstate, hi, g_tree_nnodes(uids));
 	}
 	
-	a = g_tree_new_full((GCompareDataFunc)ucmpdata,NULL, (GDestroyNotify)g_free, (GDestroyNotify)g_free);
 
 	t = g_string_new(set);
 	
@@ -1424,59 +1502,74 @@ GTree * dbmail_mailbox_get_set(DbmailMailbox *self, const char *set, gboolean ui
 	while(sets) {
 		l = 0; r = 0;
 		
-		if (strlen((char *)sets->data) < 1) break;
-		
-		rest = sets->data;
-		
-		if (rest[0] == '*') {
-			l = hi;
-			r = l;
-			if (strlen(rest) > 1)
-				rest++;
-		} else {
-			if (! (l = dm_strtoull(sets->data,&rest,10))) {
+		rest = (char *)sets->data;
+
+		if (strlen(rest) < 1) break;
+
+		if (g_tree_nnodes(uids) == 0) { // empty box
+			if (uid && (rest[0] == '*')) {
+				u64_t *k = g_new0(u64_t,1);
+				u64_t *v = g_new0(u64_t,2);
+
+				*k = 1;
+				*v = MailboxState_getUidnext(self->mbstate);
+
+				g_tree_insert(b, k, v);
+			} else {
 				error = TRUE;
 				break;
 			}
-
-			if (l == 0xffffffff) // outlook
+		} else {
+			if (rest[0] == '*') {
 				l = hi;
-
-			l = max(l,lo);
-			r = l;
-		}
-		
-		if (rest[0]==':') {
-			if (strlen(rest)>1) rest++;
-			if (rest[0] == '*') r = hi;
-			else {
-				if (! (r = dm_strtoull(rest,NULL,10))) {
+				r = l;
+				if (strlen(rest) > 1)
+					rest++;
+			} else {
+				if (! (l = dm_strtoull(sets->data,&rest,10))) {
 					error = TRUE;
 					break;
 				}
 
-				if (r == 0xffffffff) r = hi; // outlook
+				if (l == 0xffffffff) l = hi; // outlook
+
+				l = max(l,lo);
+				r = l;
 			}
 			
-			if (!r) break;
-			if (r > hi) r = hi;
-			if (r < lo) r = lo;
+			if (rest[0]==':') {
+				if (strlen(rest)>1) rest++;
+				if (rest[0] == '*') r = hi;
+				else {
+					if (! (r = dm_strtoull(rest,NULL,10))) {
+						error = TRUE;
+						break;
+					}
+
+					if (r == 0xffffffff) r = hi; // outlook
+				}
+				
+				if (!r) break;
+				if (r > hi) r = hi;
+				if (r < lo) r = lo;
+			}
+		
+			if (! (l && r)) break;
+
+			if (uid)
+				c = MailboxState_getIds(self->mbstate);
+			else
+				c = MailboxState_getMsn(self->mbstate);
+
+			find_range(c, min(l,r), max(l,r), a, uid);
+
+			if (g_tree_merge(b,a,IST_SUBSEARCH_OR)) {
+				error = TRUE;
+				TRACE(TRACE_ERR, "cannot compare null trees");
+				break;
+			}
 		}
-	
-		if (! (l && r)) break;
 
-		if (uid)
-			c = MailboxState_getIds(self->mbstate);
-		else
-			c = MailboxState_getMsn(self->mbstate);
-
-		find_range(c, min(l,r), max(l,r), a, uid);
-
-		if (g_tree_merge(b,a,IST_SUBSEARCH_OR)) {
-			error = TRUE;
-			TRACE(TRACE_ERR, "cannot compare null trees");
-			break;
-		}
 		
 		if (! g_list_next(sets)) break;
 		sets = g_list_next(sets);
@@ -1490,6 +1583,7 @@ GTree * dbmail_mailbox_get_set(DbmailMailbox *self, const char *set, gboolean ui
 	if (error) {
 		g_tree_destroy(b);
 		b = NULL;
+		TRACE(TRACE_DEBUG, "return NULL");
 	}
 
 	return b;
@@ -1565,6 +1659,8 @@ static gboolean _do_search(GNode *node, DbmailMailbox *self)
 				return TRUE;
 			break;
 
+		case IST_KEYWORD:
+		case IST_UNKEYWORD:
 		case IST_SIZE_LARGER:
 		case IST_SIZE_SMALLER:
 		case IST_HDRDATE_BEFORE:

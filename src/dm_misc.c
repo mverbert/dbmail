@@ -895,6 +895,12 @@ char *date_imap2sql(const char *imapdate)
 	struct tm tm;
 	char _sqldate[SQL_INTERNALDATE_LEN + 1];
 	char *last_char;
+	size_t l = strlen(imapdate);
+
+	if ((l < 10) || (l > 11)) {
+		TRACE(TRACE_DEBUG, "invalid size IMAP date [%s]", imapdate);
+		return g_strdup("");
+	}
 
 	// bsd needs this:
 	memset(&tm, 0, sizeof(struct tm));
@@ -903,7 +909,7 @@ char *date_imap2sql(const char *imapdate)
 		TRACE(TRACE_DEBUG, "error parsing IMAP date %s", imapdate);
 		return g_strdup("");
 	}
-	(void) strftime(_sqldate, SQL_INTERNALDATE_LEN, "%Y-%m-%d 00:00:00", &tm);
+	(void) strftime(_sqldate, SQL_INTERNALDATE_LEN+1, "%Y-%m-%d 00:00:00", &tm);
 
 	return g_strdup(_sqldate);
 }
@@ -2143,30 +2149,6 @@ char * imap_cleanup_address(const char *a)
 	g_string_free(s,FALSE);
 	TRACE(TRACE_DEBUG,"[%s]", r);
 	return r;
-}
-
-char * imap_flags_as_string(MailboxState_T S, MessageInfo *msginfo)
-{
-	GList *t, *sublist = NULL;
-	int j;
-	char *s;
-
-	for (j = 0; j < IMAP_NFLAGS; j++) {
-		if (msginfo->flags[j])
-			sublist = g_list_append(sublist,g_strdup((gchar *)imap_flag_desc_escaped[j]));
-	}
-	
-	t = g_list_first(msginfo->keywords);
-	while (t) {
-		if (MailboxState_hasKeyword(S, t->data))
-			sublist = g_list_append(sublist, g_strdup((gchar *)t->data));
-		if (! g_list_next(t)) break;
-		t = g_list_next(t);
-	}
-	
-	s = dbmail_imap_plist_as_string(sublist);
-	g_list_destroy(sublist);
-	return s;
 }
 
 #define DEBUG_UNESCAPE 0
