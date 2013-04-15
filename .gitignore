@@ -8,3 +8,5 @@ Makefile.in
 aclocal.m4
 configure
 config.in
+/config/
+/m4/
