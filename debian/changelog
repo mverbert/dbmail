@@ -1,3 +1,9 @@
+dbmail (3.0.2-2) wheezy; urgency=low
+
+  * Recompiled against updated libraries in wheezy (new stable)
+
+ -- Matthieu Verbert <matthieu.verbert@aitb.org>  Sat, 04 May 2013 23:18:24 +0200
+
 dbmail (3.0.2-1) oneiric; urgency=low
 
   * upstream release
