@@ -1,3 +1,9 @@
+dbmail (3.1.1-1) unstable; urgency=low
+
+  * upstream release
+
+ -- Matthieu Verbert <matthieu.verbert@aitb.org>  Thu, 25 Jul 2013 19:00:47 +0200
+
 dbmail (3.1.0-1) wheezy; urgency=low
 
   * upstream release
