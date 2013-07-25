@@ -1,5 +1,5 @@
 /*
- *   Copyright (c) 2005-2011 NFG Net Facilities Group BV support@nfg.nl
+ *   Copyright (c) 2005-2012 NFG Net Facilities Group BV support@nfg.nl
  *
  *   This program is free software; you can redistribute it and/or
  *   modify it under the terms of the GNU General Public License
@@ -55,7 +55,7 @@ static void start_clock(void)
 	st_time = times(&st_cpu);
 }
 
-static void end_clock(char *msg)
+static void end_clock(char * UNUSED msg)
 {
 	en_time = times(&en_cpu);
 	/*

@@ -1,6 +1,6 @@
 /*
  *  Copyright (C) 2006  Aaron Stone  <aaron@serendipity.cx>
- *  Copyright (c) 2005-2011 NFG Net Facilities Group BV support@nfg.nl
+ *  Copyright (c) 2005-2012 NFG Net Facilities Group BV support@nfg.nl
  *
  *   This program is free software; you can redistribute it and/or
  *   modify it under the terms of the GNU General Public License
@@ -40,15 +40,23 @@ extern char *configFile;
 extern int quiet;
 extern int reallyquiet;
 
-static clientbase_t * ci_new(void)
+static ClientBase_T * ci_new(void)
 {
-	clientbase_t *ci = g_new0(clientbase_t,1);
+	Mempool_T pool = mempool_open();
+	ClientBase_T *ci = mempool_pop(pool, sizeof(ClientBase_T));
 	FILE *fd = fopen("/dev/null","w");
 	ci->rx = fileno(stdin);
 	ci->tx = fileno(fd);
+	ci->pool = pool;
 	return ci;
 }
 
+static void ci_delete(ClientBase_T *ci)
+{
+	Mempool_T pool = ci->pool;
+	mempool_push(pool, ci, sizeof(ClientBase_T));
+	mempool_close(&pool);
+}
 
 /*
  *
@@ -73,28 +81,29 @@ void teardown(void)
 
 START_TEST(test_auth_validate)
 {
-	u64_t user_idnr;
+	uint64_t user_idnr;
 	int result;
-	clientbase_t *ci = ci_new();	
+	ClientBase_T *ci = ci_new();	
 
 	result = auth_validate(ci, "testuser1", "test", &user_idnr);
 	fail_unless(result==1,"auth_validate failed [%d]", result);
 	result = auth_validate(ci, "nosuchtestuser", "testnosuchlogin", &user_idnr);
 	fail_unless(result==0,"auth_validate failed [%d]", result);
 
+	ci_delete(ci);
 }
 END_TEST
 
 #if 0
 START_TEST(test_auth_change_password)
 {
-	u64_t user_idnr, user_idnr_check;
+	uint64_t user_idnr, user_idnr_check;
 	int result, i;
 	char *userid = "testchangepass";
 	char *passwd = "newpassword";
 	char *password;
 	char *enctype;
-	clientbase_t *ci = ci_new();
+	ClientBase_T *ci = ci_new();
 
 	if (!auth_user_exists(userid, &user_idnr))
 		auth_adduser(userid,"initialpassword","", 101, 1002400, &user_idnr);
@@ -126,13 +135,13 @@ END_TEST
 
 START_TEST(test_auth_change_password_raw)
 {
-	u64_t user_idnr, user_idnr_check;
+	uint64_t user_idnr, user_idnr_check;
 	int result, i;
 	const char *userid = "testchangepass";
 	const char *passwd = "yourtest";
 	char *password;
 	char *enctype;
-	clientbase_t *ci = ci_new();
+	ClientBase_T *ci = ci_new();
 
 	if (!auth_user_exists(userid, &user_idnr))
 		auth_adduser(userid,"initialpassword","", 101, 1002400, &user_idnr);

@@ -7,10 +7,7 @@ This is dbmail's GNU configure script.
 
 AC_DEFUN([DM_MSG_CONFIGURE_RESULTS], [dnl
 AC_MSG_RESULT([
-
- DM_LOGDIR:                 $DM_LOGDIR
- DM_CONFDIR:                $DM_CONFDIR
- DM_STATEDIR:               $DM_STATEDIR
+ PREFIX                     $prefix
  USE_DM_GETOPT:             $USE_DM_GETOPT
  CFLAGS:                    $CFLAGS
  GLIB:                      $GLIB_LIBS
@@ -26,6 +23,7 @@ AC_MSG_RESULT([
  LIBEVENT:                  $EVENTLIB
  OPENSSL:                   $SSL_LIBS
  ZDB:                       $ZDB_LIBS
+ JEMALLOC:                  $JEMALLOCLIB
 
 ])
 ])
@@ -35,26 +33,12 @@ AC_DEFUN([DM_DEFINES],[dnl
 AC_ARG_WITH(logdir,
 	[  --with-logdir           use logdir for logfiles],
 	logdirname="$withval")
-if test "x$logdirname" = "x"; then
-	DM_LOGDIR="/var/log"
-else
-	DM_LOGDIR="$logdirname"
+
+if test [ "x$logdirname" = "x" ]; then
+	logdirname="${ac_default_prefix}/var/log"
 fi
-if test "x$localstatedir" = 'x${prefix}/var'; then
-	DM_STATEDIR='/var/run'
-else
-	DM_STATEDIR=$localstatedir
-fi
-if test "x$sysconfdir" = 'x${prefix}/etc'; then
-	DM_CONFDIR='/etc'
-else
-	DM_CONFDIR=$sysconfdir
-fi
-if test "x$prefix" = "xNONE"; then
-	AC_DEFINE_UNQUOTED([PREFIX], "$ac_default_prefix", [Prefix to the installed path])
-else
-	AC_DEFINE_UNQUOTED([PREFIX], "$prefix", [Prefix to the installed path])
-fi
+AC_DEFINE_UNQUOTED([DEFAULT_LOG_DIR], "$logdirname", [Log directory])
+AC_DEFINE_UNQUOTED([DM_PWD], "$ac_pwd", [Build directory])
 ])
 	
 AC_DEFUN([DM_SET_SHARED_OR_STATIC], [dnl
@@ -270,6 +254,29 @@ if ( test [ "x$lookforldap" != "xno" ] || test [ "x$lookforauthldap" != "xno" ] 
 fi
 ])
 
+AC_DEFUN([DM_CHECK_JEMALLOC], [dnl
+	AC_ARG_WITH(jemalloc,[  --with-jemalloc=PATH	  path to libjemalloc base directory (e.g. /usr/local or /usr)],
+		[lookforjemalloc="$withval"],[lookforjemalloc="yes"])
+	if test [ "x$lookforjemalloc" != "xno" ] ; then
+		if test [ "x$lookforjemalloc" = "xyes" ] ; then 
+			CFLAGS="$CFLAGS -I${ac_default_prefix}/include/jemalloc -I/usr/include/jemalloc"
+		else
+			CFLAGS="$CFLAGS -I${lookforjemalloc}/include/jemalloc"
+		fi
+	fi
+	AC_CHECK_HEADERS([jemalloc.h jemalloc_defs.h],
+		[JEMALLOCLIB="-ljemalloc"], 
+		[JEMALLOCLIB="no"],
+	[[
+#include <jemalloc.h>
+#include <jemalloc_defs.h>
+	]])
+	if test [ "x$JEMALLOCLIB" != "xno" ]; then
+		LDFLAGS="$LDFLAGS $JEMALLOCLIB"
+		AC_DEFINE([USEJEMALLOC], 1, [Define if jemalloc will be used.])
+	fi
+])
+
 AC_DEFUN([DM_CHECK_ZDB], [dnl
 PKG_CHECK_MODULES([ZDB], [zdb >= 2.10], [dnl
 CFLAGS="$CFLAGS $ZDB_CFLAGS"
@@ -280,6 +287,11 @@ LDFLAGS="$LDFLAGS $ZDB_LIBS"
 AC_DEFUN([DM_SET_SQLITECREATE], [dnl
 	SQLITECREATE=`sed -e 's/\"/\\\"/g' -e 's/^/\"/' -e 's/$/\\\n\"/' -e '$!s/$/ \\\\/'  sql/sqlite/create_tables.sqlite`
 ])
+
+AC_DEFUN([DM_SET_DEFAULT_CONFIGURATION], [dnl
+	DM_DEFAULT_CONFIGURATION=`sed -e 's/\"/\\\"/g' -e 's/^/\"/' -e 's/$/\\\n\"/' -e '$!s/$/ \\\\/'  dbmail.conf`
+])
+
 
 AC_DEFUN([DM_CHECK_MATH], [dnl
 	AC_CHECK_HEADERS([math.h],[MATHLIB="-lm"], [MATHLIB="failed"])
@@ -300,7 +312,7 @@ AC_DEFUN([DM_CHECK_MHASH], [dnl
 ])
 
 AC_DEFUN([DM_CHECK_EVENT], [
-	AC_CHECK_HEADERS([event.h], [EVENTLIB="-levent"],[EVENTLIB="failed"], [#include <sys/types.h>])
+	AC_CHECK_HEADERS([event.h], [EVENTLIB="-levent_pthreads -levent"],[EVENTLIB="failed"], [#include <event2/event.h>])
 	if test [ "x$EVENTLIB" = "xfailed" ]; then
 		AC_MSG_ERROR([Could not find EVENT library.])
 	else
@@ -348,8 +360,14 @@ AC_DEFUN([DM_CHECK_GMIME], [dnl
 PKG_CHECK_MODULES([GMIME], [gmime-2.6 >= 2.6.7], [dnl
 CFLAGS="$CFLAGS $GMIME_CFLAGS"
 LDFLAGS="$LDFLAGS $GMIME_LIBS"
+], [ dnl
+PKG_CHECK_MODULES([GMIME], [gmime-2.4 >= 2.4.30], [dnl
+CFLAGS="$CFLAGS $GMIME_CFLAGS"
+LDFLAGS="$LDFLAGS $GMIME_LIBS"
 ])
 ])
+])
+
 
 AC_DEFUN([DM_PATH_CHECK],
 [

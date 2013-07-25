@@ -1,6 +1,6 @@
 /*
  Copyright (C) 1999-2004 IC & S  dbmail@ic-s.nl
- Copyright (c) 2004-2011 NFG Net Facilities Group BV support@nfg.nl
+ Copyright (c) 2004-2012 NFG Net Facilities Group BV support@nfg.nl
 
  This program is free software; you can redistribute it and/or 
  modify it under the terms of the GNU General Public License 
@@ -87,10 +87,11 @@ int main(int argc, char *argv[])
 	DbmailMessage *msg = NULL;
 	char buf[READ_SIZE], *returnpath = NULL;
 	GList *userlist = NULL;
-	GList *dsnusers = NULL;
-	deliver_to_user_t *dsnuser;
+	Mempool_T pool = mempool_open();
+	List_T dsnusers = p_list_new(pool);
+	Delivery_T *dsnuser;
 	
-	g_mime_init(0);
+	g_mime_init(GMIME_ENABLE_RFC2047_WORKAROUNDS);
 	
 	openlog(PNAME, LOG_PID, LOG_MAIL);
 
@@ -153,24 +154,24 @@ int main(int argc, char *argv[])
 		case 'u':
 			TRACE(TRACE_INFO, "using SPECIAL_DELIVERY to usernames");
 
-			dsnuser = g_new0(deliver_to_user_t,1);
+			dsnuser = g_new0(Delivery_T,1);
 			dsnuser_init(dsnuser);
 			dsnuser->address = g_strdup(optarg);
 			dsnuser->source = BOX_COMMANDLINE;
 
-			dsnusers = g_list_prepend(dsnusers, dsnuser);
+			dsnusers = p_list_prepend(dsnusers, dsnuser);
 
 			break;
 
 		case 'd':
 			TRACE(TRACE_INFO, "using SPECIAL_DELIVERY to email addresses");
 
-			dsnuser = g_new0(deliver_to_user_t,1);
+			dsnuser = g_new0(Delivery_T,1);
 			dsnuser_init(dsnuser);
 			dsnuser->address = g_strdup(optarg);
 			dsnuser->source = BOX_COMMANDLINE;
 
-			dsnusers = g_list_prepend(dsnusers, dsnuser);
+			dsnusers = p_list_prepend(dsnusers, dsnuser);
 
 			break;
 
@@ -250,8 +251,8 @@ int main(int argc, char *argv[])
 		memset(buf, 0, sizeof(buf));
 	}
 
-	msg = dbmail_message_new();
-	if (! (msg = dbmail_message_init_with_string(msg, raw))) {
+	msg = dbmail_message_new(NULL);
+	if (! (msg = dbmail_message_init_with_string(msg, raw->str))) {
 		TRACE(TRACE_ERR, "error reading message");
 		exitcode = EX_TEMPFAIL;
 		goto freeall;
@@ -286,11 +287,11 @@ int main(int argc, char *argv[])
 		/* Loop through the users list, moving the entries into the dsnusers list. */
 		userlist = g_list_first(userlist);
 		while (userlist) {
-			dsnuser = g_new0(deliver_to_user_t,1);
+			dsnuser = g_new0(Delivery_T,1);
 			dsnuser_init(dsnuser);
 			dsnuser->address = g_strdup((char *) userlist->data);
 	
-			dsnusers = g_list_prepend(dsnusers, dsnuser);
+			dsnusers = p_list_prepend(dsnusers, dsnuser);
 
 			if (! g_list_next(userlist))
 				break;
@@ -302,17 +303,17 @@ int main(int argc, char *argv[])
 	if (deliver_to_mailbox != NULL) {
 		TRACE(TRACE_DEBUG, "setting mailbox for all deliveries to [%s]", deliver_to_mailbox);
 		/* Loop through the dsnusers list, setting the destination mailbox. */
-		dsnusers = g_list_first(dsnusers);
+		dsnusers = p_list_first(dsnusers);
 		while (dsnusers) {
-			((deliver_to_user_t *)dsnusers->data)->mailbox = g_strdup(deliver_to_mailbox);
+			((Delivery_T *)p_list_data(dsnusers))->mailbox = g_strdup(deliver_to_mailbox);
 			if (brute_force) {
-				((deliver_to_user_t *)dsnusers->data)->source = BOX_BRUTEFORCE;
+				((Delivery_T *)p_list_data(dsnusers))->source = BOX_BRUTEFORCE;
 			} else {
-				((deliver_to_user_t *)dsnusers->data)->source = BOX_COMMANDLINE;
+				((Delivery_T *)p_list_data(dsnusers))->source = BOX_COMMANDLINE;
 			}
-			if (! g_list_next(dsnusers))
+			if (! p_list_next(dsnusers))
 				break;
-			dsnusers = g_list_next(dsnusers);
+			dsnusers = p_list_next(dsnusers);
 		}
 	}
 
@@ -378,20 +379,17 @@ int main(int argc, char *argv[])
 
 	if (raw)
 		g_string_free(raw, TRUE);
+
 	dbmail_message_free(msg);
 	dsnuser_free_list(dsnusers);
 	g_list_destroy(userlist);
 	g_free(returnpath);
-
-	TRACE(TRACE_DEBUG, "program memory free");
+	mempool_close(&pool);
 
 	db_disconnect();
 	auth_disconnect();
 	config_free();
-
 	g_mime_shutdown();
-
-	TRACE(TRACE_DEBUG, "library memory free");
 
 	return exitcode;
 }

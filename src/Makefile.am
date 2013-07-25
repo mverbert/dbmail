@@ -18,6 +18,8 @@
 
 SUBDIRS = modules
 
+
+
 if SIEVE
 SIEVEPROGS = dbmail-sievecmd dbmail-timsieved
 endif
@@ -53,7 +55,10 @@ COMMON = dbmail-user.c \
 	dm_match.c \
 	dm_iconv.c \
 	dm_dsn.c \
-	dm_sset.c $(DM_GETOPT)
+	dm_sset.c \
+	dm_string.c \
+	$(top_srcdir)/src/mpool/mpool.c \
+	dm_mempool.c $(DM_GETOPT)
 	
 
 SERVER = server.c \
@@ -65,12 +70,11 @@ SERVER = server.c \
 	dm_cidr.c
 
 IMAPD = dm_quota.c \
-	dm_memblock.c \
-	dm_cache.c \
 	imap4.c \
 	imapcommands.c \
 	dbmail-imapsession.c
 
+AM_CPPFLAGS = -DSYSCONFDIR='"$(sysconfdir)"' -DLIBDIR='"$(libdir)"' -DLOCALSTATEDIR='"$(localstatedir)"'
 AM_CFLAGS = @SIEVEINC@ @LDAPINC@
 
 INCLUDES = -I$(top_srcdir)

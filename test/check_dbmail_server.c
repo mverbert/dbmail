@@ -1,5 +1,5 @@
 /*
- *   Copyright (c) 2005-2011 NFG Net Facilities Group BV support@nfg.nl
+ *   Copyright (c) 2005-2012 NFG Net Facilities Group BV support@nfg.nl
  *
  *   This program is free software; you can redistribute it and/or
  *   modify it under the terms of the GNU General Public License
@@ -52,7 +52,7 @@ void setup(void)
 	config_read(configFile);
 	GetDBParams();
 	db_connect();
-	g_mime_init(0);
+	g_mime_init(GMIME_ENABLE_RFC2047_WORKAROUNDS);
 }
 
 void teardown(void)

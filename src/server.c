@@ -1,7 +1,7 @@
 /*
   
  Copyright (C) 1999-2004 IC & S  dbmail@ic-s.nl
- Copyright (c) 2004-2011 NFG Net Facilities Group BV support@nfg.nl
+ Copyright (c) 2004-2012 NFG Net Facilities Group BV support@nfg.nl
 
  This program is free software; you can redistribute it and/or 
  modify it under the terms of the GNU General Public License 
@@ -26,29 +26,43 @@
 
 #include "dbmail.h"
 #include "dm_request.h"
+#include "dm_mempool.h"
+
 #define THIS_MODULE "server"
 
-static char *configFile = DEFAULT_CONFIG_FILE;
 
 volatile sig_atomic_t mainRestart = 0;
-volatile sig_atomic_t alarm_occurred = 0;
 
 // thread data
-int selfpipe[2];
+Mempool_T    queue_pool;
 GAsyncQueue *queue;
 GThreadPool *tpool = NULL;
 
-serverConfig_t *server_conf;
-extern db_param_t _db_params;
+char             configFile[FIELDSIZE];
+ServerConfig_T   *server_conf;
+extern DBParam_T  db_params;
 
-static void server_config_load(serverConfig_t * conf, const char * const service);
+static void server_config_load(ServerConfig_T * conf, const char * const service);
 static int server_set_sighandler(void);
 void disconnect_all(void);
 
-struct event *sig_int, *sig_hup, *sig_pipe, *sig_term;
-
+struct event_base *evbase = NULL;
+struct event *sig_int = NULL;
+struct event *sig_hup = NULL;
+struct event *sig_term = NULL;
+struct event *sig_pipe = NULL;
+struct event *sig_usr = NULL;
 struct event *pev = NULL;
+
 SSL_CTX *tls_context;
+
+FILE *fstdout = NULL;
+FILE *fstderr = NULL;
+FILE *fnull = NULL;
+/*
+ * self-pipe event
+ */
+int selfpipe[2];
 
 /* 
  *
@@ -85,6 +99,28 @@ void dm_queue_drain(int sock, short event UNUSED, void *arg UNUSED)
 	event_add(pev, NULL);
 }
 
+/*
+ * push a job to the queue
+ *
+ */
+
+void dm_queue_push(void *cb, void *session, void *data)
+{
+	dm_thread_data *D;
+	D = mempool_pop(queue_pool, sizeof(*D));
+	D->magic    = DM_THREAD_DATA_MAGIC;
+	D->status   = 0;
+	D->pool     = queue_pool;
+	D->cb_enter = NULL;
+	D->cb_leave = cb;
+	D->session  = session;
+	D->data     = data;
+
+        g_async_queue_push(queue, (gpointer)D);
+        if (selfpipe[1] > -1)
+		if (write(selfpipe[1], "Q", 1) != 1) { /* ignore */; } 
+}
+
 /* 
  * push a job to the thread pool
  *
@@ -94,9 +130,9 @@ void dm_thread_data_push(gpointer session, gpointer cb_enter, gpointer cb_leave,
 {
 	GError *err = NULL;
 	ImapSession *s;
+	dm_thread_data *D;
 
 	assert(session);
-	assert(cb_enter);
 
 	s = (ImapSession *)session;
 
@@ -106,11 +142,14 @@ void dm_thread_data_push(gpointer session, gpointer cb_enter, gpointer cb_leave,
 	if (s->state == CLIENTSTATE_QUIT_QUEUED)
 		return;
 
-	dm_thread_data *D = g_new0(dm_thread_data,1);
-	D->cb_enter	= cb_enter;
-	D->cb_leave     = cb_leave;
-	D->session	= session;
-	D->data         = data;
+	D = mempool_pop(queue_pool, sizeof(*D));
+	D->magic    = DM_THREAD_DATA_MAGIC;
+	D->status   = 0;
+	D->pool     = queue_pool;
+	D->cb_enter = cb_enter;
+	D->cb_leave = cb_leave;
+	D->session  = session;
+	D->data     = data;
 
 	// we're not done until we're done
 	D->session->command_state = FALSE; 
@@ -118,6 +157,12 @@ void dm_thread_data_push(gpointer session, gpointer cb_enter, gpointer cb_leave,
 	TRACE(TRACE_DEBUG,"[%p] [%p]", D, D->session);
 	
 	g_thread_pool_push(tpool, D, &err);
+	TRACE(TRACE_INFO, "threads unused %u/%d limits %u/%d queued jobs %d",
+			g_thread_pool_get_num_unused_threads(),
+			g_thread_pool_get_max_unused_threads(),
+			g_thread_pool_get_num_threads(tpool),
+			g_thread_pool_get_max_threads(tpool),
+			g_thread_pool_unprocessed(tpool));
 
 	if (err) TRACE(TRACE_EMERG,"g_thread_pool_push failed [%s]", err->message);
 }
@@ -125,10 +170,7 @@ void dm_thread_data_push(gpointer session, gpointer cb_enter, gpointer cb_leave,
 void dm_thread_data_free(gpointer data)
 {
 	dm_thread_data *D = (dm_thread_data *)data;
-	if (D->data) {
-		g_free(D->data); D->data = NULL;
-	}
-	g_free(D); D = NULL;
+	mempool_push(queue_pool, D, sizeof(dm_thread_data));
 }
 
 /* 
@@ -140,9 +182,11 @@ void dm_thread_data_sendmessage(gpointer data)
 {
 	dm_thread_data *D = (dm_thread_data *)data;
 	ImapSession *session = (ImapSession *)D->session;
-	if (D->data && session) {
-		ci_write(session->ci, "%s", (char *)D->data);
-	}
+	String_T buf = D->data;
+
+	ci_write(session->ci, "%s", p_string_str(buf));
+
+	p_string_free(buf, TRUE);
 }
 
 /* 
@@ -167,17 +211,17 @@ static void dm_thread_dispatch(gpointer data, gpointer user_data)
  * basic server setup
  *
  */
-static int server_setup(serverConfig_t *conf)
+
+static int server_setup(ServerConfig_T *conf)
 {
 	GError *err = NULL;
-	guint tpool_size = _db_params.max_db_connections;
+	guint tpool_size = db_params.max_db_connections;
 
 	server_set_sighandler();
 
 	if (! MATCH(conf->service_name,"IMAP")) 
 		return 0;
 
-	if (! g_thread_supported () ) g_thread_init (NULL);
 	// Asynchronous message queue for receiving messages
 	// from worker threads in the main thread. 
 	//
@@ -185,6 +229,8 @@ static int server_setup(serverConfig_t *conf)
 	// see the libevent docs for the ratio and a work-around.
 	// Dbmail only needs and uses a single eventbase for now.
 	queue = g_async_queue_new();
+
+	queue_pool = mempool_open();
 
 	// Create the thread pool
 	if (! (tpool = g_thread_pool_new((GFunc)dm_thread_dispatch,NULL,tpool_size,TRUE,&err)))
@@ -197,14 +243,19 @@ static int server_setup(serverConfig_t *conf)
 	UNBLOCK(selfpipe[0]);
 	UNBLOCK(selfpipe[1]);
 	
-	pev = g_new0(struct event, 1);
-	event_set(pev, selfpipe[0], EV_READ, dm_queue_drain, NULL);
+	assert(evbase);
+	pev = event_new(evbase, selfpipe[0], EV_READ, dm_queue_drain, NULL);
 	event_add(pev, NULL);
 
 	return 0;
 }
-	
-static int server_start_cli(serverConfig_t *conf)
+
+static void _cb_log_event(int UNUSED severity, const char *msg)
+{
+	TRACE(TRACE_WARNING, "%s", msg);
+}
+
+static int server_start_cli(ServerConfig_T *conf)
 {
 	server_conf = conf;
 	if (db_connect() != 0) {
@@ -224,10 +275,19 @@ static int server_start_cli(serverConfig_t *conf)
 	if (MATCH(conf->service_name,"HTTP")) {
 		TRACE(TRACE_DEBUG,"starting httpd cli server...");
 	} else {
-		event_init();
+		Mempool_T pool = mempool_open();
+		client_sock *c = mempool_pop(pool, sizeof(client_sock));
+		c->pool = pool;
+		evthread_use_pthreads();
+#ifdef DEBUG
+		event_enable_debug_mode();
+		event_set_log_callback(_cb_log_event);
+#endif
+
+		evbase = event_base_new();
 		if (server_setup(conf)) return -1;
-		conf->ClientHandler(NULL);
-		event_dispatch();
+		conf->ClientHandler(c);
+		event_base_dispatch(evbase);
 	}
 
 	disconnect_all();
@@ -237,7 +297,7 @@ static int server_start_cli(serverConfig_t *conf)
 }
 
 // PUBLIC
-int StartCliServer(serverConfig_t * conf)
+int StartCliServer(ServerConfig_T * conf)
 {
 	assert(conf);
 	server_start_cli(conf);
@@ -247,21 +307,25 @@ int StartCliServer(serverConfig_t * conf)
 /* Should be called after a HUP to allow for log rotation,
  * as the filesystem may want to give us new inodes and/or
  * the user may have changed the log file configs. */
-static void reopen_logs(serverConfig_t *conf)
+static void reopen_logs(ServerConfig_T *conf)
 {
 	int serr;
 
-	if (! (freopen(conf->log, "a", stdout))) {
+	if (fstdout) fclose(fstdout);
+	if (fstderr) fclose(fstderr);
+	if (fnull) fclose(fnull);
+
+	if (! (fstdout = freopen(conf->log, "a", stdout))) {
 		serr = errno;
 		TRACE(TRACE_ERR, "freopen failed on [%s] [%s]", conf->log, strerror(serr));
 	}
 
-	if (! (freopen(conf->error_log, "a", stderr))) {
+	if (! (fstderr = freopen(conf->error_log, "a", stderr))) {
 		serr = errno;
 		TRACE(TRACE_ERR, "freopen failed on [%s] [%s]", conf->error_log, strerror(serr));
 	}
 
-	if (! (freopen("/dev/null", "r", stdin))) {
+	if (! (fnull = freopen("/dev/null", "r", stdin))) {
 		serr = errno;
 		TRACE(TRACE_ERR, "freopen failed on stdin [%s]", strerror(serr));
 	}
@@ -269,25 +333,29 @@ static void reopen_logs(serverConfig_t *conf)
 	
 /* Should be called once to initially close the actual std{in,out,err}
  * and open the redirection files. */
-static void reopen_logs_fatal(serverConfig_t *conf)
+static void reopen_logs_fatal(ServerConfig_T *conf)
 {
 	int serr;
 
-	if (! (freopen(conf->log, "a", stdout))) {
+	if (fstdout) fclose(fstdout);
+	if (fstderr) fclose(fstderr);
+	if (fnull) fclose(fnull);
+
+	if (! (fstdout = freopen(conf->log, "a", stdout))) {
 		serr = errno;
 		TRACE(TRACE_EMERG, "freopen failed on [%s] [%s]", conf->log, strerror(serr));
 	}
-	if (! (freopen(conf->error_log, "a", stderr))) {
+	if (! (fstdout = freopen(conf->error_log, "a", stderr))) {
 		serr = errno;
 		TRACE(TRACE_EMERG, "freopen failed on [%s] [%s]", conf->error_log, strerror(serr));
 	}
-	if (! (freopen("/dev/null", "r", stdin))) {
+	if (! (fstdout = freopen("/dev/null", "r", stdin))) {
 		serr = errno;
 		TRACE(TRACE_EMERG, "freopen failed on stdin [%s]", strerror(serr));
 	}
 }
 
-pid_t server_daemonize(serverConfig_t *conf)
+pid_t server_daemonize(ServerConfig_T *conf)
 {
 	assert(conf);
 	
@@ -338,7 +406,7 @@ static int dm_bind_and_listen(int sock, struct sockaddr *saddr, socklen_t len, i
 	
 }
 
-static int create_unix_socket(serverConfig_t * conf)
+static int create_unix_socket(ServerConfig_T * conf)
 {
 	int sock;
 	struct sockaddr_un un;
@@ -365,7 +433,7 @@ static int create_unix_socket(serverConfig_t * conf)
 	return sock;
 }
 
-static void create_inet_socket(serverConfig_t *conf, int i, gboolean ssl)
+static void create_inet_socket(ServerConfig_T *conf, int i, gboolean ssl)
 {
 	struct addrinfo hints, *res, *res0;
 	int s, error = 0;
@@ -404,7 +472,7 @@ static void create_inet_socket(serverConfig_t *conf, int i, gboolean ssl)
 	freeaddrinfo(res0);
 }
 
-static void server_close_sockets(serverConfig_t *conf)
+static void server_close_sockets(ServerConfig_T *conf)
 {
 	if (conf->evh) {
 		evhttp_free(conf->evh);
@@ -421,6 +489,9 @@ static void server_close_sockets(serverConfig_t *conf)
 		conf->ssl_socketcount=0;
 		if (conf->socket)
 			unlink(conf->socket);
+
+		g_free(conf->listenSockets);
+		g_free(conf->ssl_listenSockets);
 	}
 }
 
@@ -428,9 +499,16 @@ static void server_exit(void)
 {
 	disconnect_all();
 	server_close_sockets(server_conf);
+	event_base_free(evbase);
+
+	if (fstdout) fclose(fstdout);
+	if (fstderr) fclose(fstderr);
+	if (fnull) fclose(fnull);
+	closelog();
+	//mempool_close(&queue_pool);
 }
 	
-static void server_create_sockets(serverConfig_t * conf)
+static void server_create_sockets(ServerConfig_T * conf)
 {
 	int i;
 
@@ -460,45 +538,69 @@ static void server_create_sockets(serverConfig_t * conf)
 
 static void _sock_cb(int sock, short event, void *arg, gboolean ssl)
 {
-	client_sock *c = g_new0(client_sock,1);
-	struct sockaddr *caddr = (struct sockaddr *)g_new0(struct sockaddr_storage, 1);
-	struct sockaddr *saddr = (struct sockaddr *)g_new0(struct sockaddr_storage, 1);
+	Mempool_T pool;
+	client_sock *c;
+	int csock;
+	struct sockaddr *caddr;
+	struct sockaddr *saddr;
 	struct event *ev = (struct event *)arg;
 
-	TRACE(TRACE_DEBUG,"%d %d, %p, ssl:%s", sock, event, arg, ssl?"Y":"N");
-
+#ifdef DEBUG
+	TRACE(TRACE_DEBUG,"%d %s%s%s%s, %p, ssl:%s", sock, 
+			(event&EV_TIMEOUT) ? " timeout" : "", 
+			(event&EV_READ)    ? " read"    : "", 
+			(event&EV_WRITE)   ? " write"   : "", 
+			(event&EV_SIGNAL)  ? " signal"  : "", 
+			arg, ssl?"Y":"N");
+#endif
 	/* accept the active fd */
 	int len = sizeof(*caddr);
 
-	if ((c->sock = accept(sock, NULL, NULL)) < 0) {
+	if ((csock = accept(sock, NULL, NULL)) < 0) {
                 int serr=errno;
                 switch(serr) {
                         case ECONNABORTED:
                         case EPROTO:
                         case EINTR:
-                                TRACE(TRACE_DEBUG, "%s", strerror(serr));
+                        case EAGAIN:
+                                TRACE(TRACE_DEBUG, "%d:%s", serr, strerror(serr));
                                 break;
                         default:
-                                TRACE(TRACE_ERR, "%s", strerror(serr));
+                                TRACE(TRACE_ERR, "%d:%s", serr, strerror(serr));
                                 break;
                 }
                 return;
         }
-
+	
+	pool = mempool_open();
+	c = mempool_pop(pool, sizeof(client_sock));
+	c->pool = pool;
+	c->sock = csock;
+        caddr = mempool_pop(c->pool, sizeof(struct sockaddr_storage));
 	if (getpeername(c->sock, caddr, (socklen_t *)&len) < 0) {
 		int serr = errno;
 		TRACE(TRACE_INFO, "getpeername::error [%s]", strerror(serr));
+		mempool_push(pool, caddr, sizeof(struct sockaddr_storage));
+		mempool_push(pool, c, sizeof(client_sock));
+		mempool_close(&pool);
+		close(csock);
 		return;
+	}
+
+        saddr = mempool_pop(c->pool, sizeof(struct sockaddr_storage));
+	if (getsockname(c->sock, saddr, (socklen_t *)&len) < 0) {
+		int serr = errno;
+		TRACE(TRACE_EMERG, "getsockname::error [%s]", strerror(serr));
+		mempool_push(pool, caddr, sizeof(struct sockaddr_storage));
+		mempool_push(pool, saddr, sizeof(struct sockaddr_storage));
+		mempool_push(pool, c, sizeof(client_sock));
+		mempool_close(&pool);
+		close(csock);
+		return; // fatal 
 	}
 
 	c->caddr = caddr;
 	c->caddr_len = len;
-
-	if (getsockname(c->sock, saddr, (socklen_t *)&len) < 0) {
-		int serr = errno;
-		TRACE(TRACE_EMERG, "getsockname::error [%s]", strerror(serr));
-		return; // fatal 
-	}
 
 	c->saddr = saddr;
 	c->saddr_len = len;
@@ -510,19 +612,8 @@ static void _sock_cb(int sock, short event, void *arg, gboolean ssl)
 	/* streams are ready, perform handling */
 	server_conf->ClientHandler((client_sock *)c);
 
-	g_free(caddr);
-	g_free(saddr);
-
-	if (c->ssl) {
-		SSL_shutdown(c->ssl);
-		SSL_free(c->ssl);
-	}
-
-	g_free(c);
-
 	/* reschedule */
 	event_add(ev, NULL);
-
 }
 
 static void server_sock_cb(int sock, short event, void *arg)
@@ -540,12 +631,16 @@ void server_sig_cb(int fd, short event, void *arg)
 {
 	struct event *ev = arg;
 	
-	TRACE(TRACE_DEBUG,"fd [%d], event [%d], signal [%d]", fd, event, EVENT_SIGNAL(ev));
+	TRACE(TRACE_DEBUG, "fd %d, event %d, %s", 
+			fd, event, strsignal(EVENT_SIGNAL(ev)));
 
 	switch (EVENT_SIGNAL(ev)) {
 		case SIGHUP: // TODO: reload config
 			mainRestart = 1;
 		case SIGPIPE: // ignore
+		break;
+		case SIGUSR1:
+			g_mem_profile();
 		break;
 		default:
 			exit(0);
@@ -555,19 +650,30 @@ void server_sig_cb(int fd, short event, void *arg)
 
 static int server_set_sighandler(void)
 {
-	sigset_t set;
-	sig_int = g_new0(struct event, 1);
-	sig_hup = g_new0(struct event, 1);
-	sig_term = g_new0(struct event, 1);
+	assert(evbase);
 
-	signal_set(sig_int, SIGINT, server_sig_cb, sig_int); signal_add(sig_int, NULL);
-	signal_set(sig_hup, SIGHUP, server_sig_cb, sig_hup); signal_add(sig_hup, NULL);
-	signal_set(sig_term, SIGTERM, server_sig_cb, sig_term); signal_add(sig_term, NULL);
+	sig_int = evsignal_new(evbase, SIGINT, server_sig_cb, NULL);
+	evsignal_assign(sig_int, evbase, SIGINT, server_sig_cb, sig_int);
+	evsignal_add(sig_int, NULL);
 
-	sigemptyset(&set);
-	sigaddset(&set, SIGPIPE);
-	pthread_sigmask(SIG_BLOCK, &set, NULL);
+	sig_hup = evsignal_new(evbase, SIGHUP, server_sig_cb, NULL); 
+	evsignal_assign(sig_hup, evbase, SIGHUP, server_sig_cb, sig_hup); 
+	evsignal_add(sig_hup, NULL);
 
+	sig_term = evsignal_new(evbase, SIGTERM, server_sig_cb, NULL); 
+	evsignal_assign(sig_term, evbase, SIGTERM, server_sig_cb, sig_term); 
+	evsignal_add(sig_term, NULL);
+	
+	sig_pipe = evsignal_new(evbase, SIGPIPE, server_sig_cb, NULL);
+	evsignal_assign(sig_pipe, evbase, SIGPIPE, server_sig_cb, sig_pipe);
+	evsignal_add(sig_pipe, NULL);
+
+#if MEMDEBUG
+	sig_usr = evsignal_new(evbase, SIGUSR1, server_sig_cb, NULL); 
+	evsignal_assign(sig_usr, evbase, SIGUSR1, server_sig_cb, sig_usr); 
+	evsignal_add(sig_usr, NULL);
+#endif
+	
 	TRACE(TRACE_INFO, "signal handler placed");
 
 	return 0;
@@ -584,24 +690,34 @@ void disconnect_all(void)
 	config_free();
 
 	if (tpool) { 
-		g_thread_pool_free(tpool,TRUE,FALSE);
+		g_thread_pool_free(tpool, TRUE, TRUE);
 		tpool = NULL;
 	}
 	if (sig_int) {
-		g_free(sig_int);
+		event_free(sig_int);
 		sig_int = NULL;
 	}
 	if (sig_hup) {
-		g_free(sig_hup);
+		event_free(sig_hup);
 		sig_hup = NULL;
 	}
 	if (sig_term) {
-		g_free(sig_term);
+		event_free(sig_term);
 		sig_term = NULL;
+	}
+#if MEMDEBUG
+	if (sig_usr) {
+		free(sig_usr);
+		sig_usr = NULL;
+	}
+#endif
+	if (sig_pipe) {
+		free(sig_pipe);
+		sig_pipe = NULL;
 	}
 }
 
-static void server_pidfile(serverConfig_t *conf)
+static void server_pidfile(ServerConfig_T *conf)
 {
 	static gboolean configured = FALSE;
 	if (configured) return;
@@ -616,10 +732,10 @@ static void server_pidfile(serverConfig_t *conf)
 	configured = TRUE;
 }
 
-int server_run(serverConfig_t *conf)
+int server_run(ServerConfig_T *conf)
 {
 	int i;
-	struct event *evsock;
+	struct event **evsock;
 
 	mainRestart = 0;
 
@@ -644,7 +760,12 @@ int server_run(serverConfig_t *conf)
 
 	server_conf = conf;
 
-	event_init();
+	evthread_use_pthreads();
+#ifdef DEBUG
+	event_enable_debug_mode();
+	event_set_log_callback(_cb_log_event);
+#endif
+	evbase = event_base_new();
 
 	if (server_setup(conf)) return -1;
 
@@ -671,17 +792,19 @@ int server_run(serverConfig_t *conf)
 			int k, total;
 			server_create_sockets(conf);
 			total = conf->socketcount + conf->ssl_socketcount;
-			evsock = g_new0(struct event, total);
+			evsock = g_new0(struct event *, total);
 			for (i = 0; i < conf->socketcount; i++) {
 				TRACE(TRACE_DEBUG, "Adding event for plain socket [%d] [%d/%d]", conf->listenSockets[i], i+1, total);
-				event_set(&evsock[i], conf->listenSockets[i], EV_READ, server_sock_cb, &evsock[i]);
-				event_add(&evsock[i], NULL);
+				evsock[i] = event_new(evbase, conf->listenSockets[i], EV_READ, server_sock_cb, NULL);
+				event_assign(evsock[i], evbase, conf->listenSockets[i], EV_READ, server_sock_cb, evsock[i]);
+				event_add(evsock[i], NULL);
 			}
 			k = i+1;
 			for (k = i, i = 0; i < conf->ssl_socketcount; i++, k++) {
 				TRACE(TRACE_DEBUG, "Adding event for ssl socket [%d] [%d/%d]", conf->ssl_listenSockets[i], k+1, total);
-				event_set(&evsock[k], conf->ssl_listenSockets[i], EV_READ, server_sock_ssl_cb, &evsock[k]);
-				event_add(&evsock[k], NULL);
+				evsock[k] = event_new(evbase, conf->ssl_listenSockets[i], EV_READ, server_sock_ssl_cb, NULL);
+				event_assign(evsock[k], evbase, conf->ssl_listenSockets[i], EV_READ, server_sock_ssl_cb, evsock[k]);
+				event_add(evsock[k], NULL);
 			}
 		}
 	}	
@@ -697,7 +820,7 @@ int server_run(serverConfig_t *conf)
 
 	TRACE(TRACE_DEBUG,"dispatching event loop...");
 
-	event_dispatch();
+	event_base_dispatch(evbase);
 
 	return 0;
 }
@@ -724,7 +847,7 @@ void server_showhelp(const char *name, const char *greeting) {
  * 1 help must be shown, then quit
  */ 
 
-static void server_config_free(serverConfig_t * config)
+static void server_config_free(ServerConfig_T * config)
 {
 	assert(config);
 
@@ -737,13 +860,15 @@ static void server_config_free(serverConfig_t * config)
 	config->ssl_listenSockets = NULL;
 	config->iplist = NULL;
 
-	memset(config, 0, sizeof(serverConfig_t));
+	memset(config, 0, sizeof(ServerConfig_T));
 }
 
-int server_getopt(serverConfig_t *config, const char *service, int argc, char *argv[])
+int server_getopt(ServerConfig_T *config, const char *service, int argc, char *argv[])
 {
 	int opt;
-	configFile = g_strdup(DEFAULT_CONFIG_FILE);
+	memset(configFile, 0, sizeof(configFile));
+
+	g_strlcpy(configFile,DEFAULT_CONFIG_FILE, FIELDSIZE-1);
 
 	server_config_free(config);
 
@@ -777,8 +902,7 @@ int server_getopt(serverConfig_t *config, const char *service, int argc, char *a
 			break;
 		case 'f':
 			if (optarg && strlen(optarg) > 0) {
-                                g_free(configFile);
-				configFile = g_strdup(optarg);
+				g_strlcpy(configFile, optarg, FIELDSIZE-1);
 			} else {
 				fprintf(stderr, "%s: -f requires a filename argument\n\n", argv[0]);
 				return 1;
@@ -804,11 +928,11 @@ int server_getopt(serverConfig_t *config, const char *service, int argc, char *a
 	return 0;
 }
 
-int server_mainloop(serverConfig_t *config, const char *service, const char *servicename)
+int server_mainloop(ServerConfig_T *config, const char *service, const char *servicename)
 {
 	strncpy(config->process_name, servicename, FIELDSIZE);
 
-	g_mime_init(0);
+	g_mime_init(GMIME_ENABLE_RFC2047_WORKAROUNDS);
 	g_mime_parser_get_type();
 	g_mime_stream_get_type();
 	g_mime_stream_mem_get_type();
@@ -842,19 +966,28 @@ int server_mainloop(serverConfig_t *config, const char *service, const char *ser
 	return 0;
 }
 
-void server_config_load(serverConfig_t * config, const char * const service)
+void server_config_load(ServerConfig_T * config, const char * const service)
 {
-	field_t val, val_ssl;
+	Field_T val, val_ssl;
 
 	TRACE(TRACE_DEBUG, "reading config [%s]", configFile);
 	config_free();
 	config_read(configFile);
 
+	GetDBParams();
 	SetTraceLevel(service);
 	/* Override SetTraceLevel. */
 	if (config->log_verbose) {
 		configure_debug(5,5);
 	}
+
+	config_get_value("max_db_connections", service, val);
+	if (strlen(val) != 0) {
+		db_params.max_db_connections = (unsigned int) strtol(val, NULL, 10);
+		if (errno == EINVAL || errno == ERANGE)
+			TRACE(TRACE_EMERG, "max_db_connnections invalid in config file");
+	} 
+	TRACE(TRACE_DEBUG, "max_db_connections [%d]", db_params.max_db_connections);
 
 	config_get_logfiles(config, service);
 
@@ -932,6 +1065,7 @@ void server_config_load(serverConfig_t * config, const char * const service)
 		config->backlog = BACKLOG;
 	} else if ((config->backlog = atoi(val)) <= 0)
 		TRACE(TRACE_EMERG, "value for BACKLOG is invalid: [%d]", config->backlog);
+	TRACE(TRACE_DEBUG, "%s backlog [%d]", service, config->backlog);
 
 	/* read items: RESOLVE_IP */
 	config_get_value("RESOLVE_IP", service, val);
@@ -1015,7 +1149,6 @@ void server_config_load(serverConfig_t * config, const char * const service)
 
 	strncpy(config->service_name, service, FIELDSIZE);
 
-	GetDBParams();
 }
 
 

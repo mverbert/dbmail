@@ -1,6 +1,6 @@
 /*
   
- Copyright (c) 2009-2011 NFG Net Facilities Group BV support@nfg.nl
+ Copyright (c) 2009-2012 NFG Net Facilities Group BV support@nfg.nl
 
  This program is free software; you can redistribute it and/or 
  modify it under the terms of the GNU General Public License 
@@ -18,22 +18,19 @@
  Foundation, Inc., 675 Mass Ave, Cambridge, MA 02139, USA.
 */
 
-#ifndef CAPA_H
-#define CAPA_H
+#ifndef DM_CAPA_H
+#define DM_CAPA_H
 
 #include <glib.h>
+#include "dm_mempool.h"
 
-#define T Capa_T
+typedef struct Capa_T *Capa_T;
 
-typedef struct T *T;
-
-extern T               Capa_new(void);
-extern const gchar *   Capa_as_string(T);
-extern gboolean        Capa_match(T, const char *); 
-extern void            Capa_add(T, const char *);
-extern void            Capa_remove(T, const char *);
-extern void            Capa_free(T *);
-
-#undef T
+extern Capa_T          Capa_new(Mempool_T);
+extern const gchar *   Capa_as_string(Capa_T);
+extern gboolean        Capa_match(Capa_T, const char *); 
+extern void            Capa_add(Capa_T, const char *);
+extern void            Capa_remove(Capa_T, const char *);
+extern void            Capa_free(Capa_T *);
 
 #endif

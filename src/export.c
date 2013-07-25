@@ -1,5 +1,5 @@
 /*
- Copyright (c) 2004-2011 NFG Net Facilities Group BV support@nfg.nl
+ Copyright (c) 2004-2012 NFG Net Facilities Group BV support@nfg.nl
  Copyright (C) 2007 Aaron Stone aaron@serendity.cx
 
  This program is free software; you can redistribute it and/or 
@@ -28,8 +28,8 @@ char *configFile = DEFAULT_CONFIG_FILE;
 
 #define PNAME "dbmail/export"
 
-extern db_param_t _db_params;
-#define DBPFX _db_params.pfx
+extern DBParam_T db_params;
+#define DBPFX db_params.pfx
 
 /* UI policy */
 int quiet = 0;
@@ -71,13 +71,16 @@ void do_showhelp(void)
 	);
 }
 
-static int mailbox_dump(u64_t mailbox_idnr, const char *dumpfile,
+static int mailbox_dump(uint64_t mailbox_idnr, const char *dumpfile,
 		const char *search, int delete_after_dump)
 {
 	FILE *ostream;
 	DbmailMailbox *mb = NULL;
 	ImapSession *s = NULL;
 	int result = 0;
+
+	if (! search)
+		search = "1:*";
 
 	/* 
 	 * For dbmail the usual filesystem semantics don't really 
@@ -87,26 +90,27 @@ static int mailbox_dump(u64_t mailbox_idnr, const char *dumpfile,
 	 *
 	 * TODO: facilitate maildir type exports
 	 */
-	mb = dbmail_mailbox_new(mailbox_idnr);
-	if (search) {
-		s = dbmail_imap_session_new();
-		s->ci = client_init(NULL);
-		if (! (imap4_tokenizer_main(s, search))) {
-			qerrorf("error parsing search string");
-			dbmail_imap_session_delete(&s);
-			dbmail_mailbox_free(mb);
-			return 1;
-		}
-	
-		if (dbmail_mailbox_build_imap_search(mb, s->args, &(s->args_idx), SEARCH_UNORDERED) < 0) {
-			qerrorf("invalid search string");
-			dbmail_imap_session_delete(&s);
-			dbmail_mailbox_free(mb);
-			return 1;
-		}
-		dbmail_mailbox_search(mb);
-		dbmail_imap_session_delete(&s);	
+	mb = dbmail_mailbox_new(NULL, mailbox_idnr);
+	client_sock *c;
+	s = dbmail_imap_session_new(mb->pool);
+	c = mempool_pop(s->pool, sizeof(client_sock));
+	c->pool = s->pool;
+	s->ci = client_init(c);
+	if (! (imap4_tokenizer_main(s, search))) {
+		qerrorf("error parsing search string");
+		dbmail_mailbox_free(mb);
+		dbmail_imap_session_delete(&s);
+		return 1;
 	}
+
+	if (dbmail_mailbox_build_imap_search(mb, s->args, &(s->args_idx), SEARCH_UNORDERED) < 0) {
+		qerrorf("invalid search string");
+		dbmail_mailbox_free(mb);
+		dbmail_imap_session_delete(&s);
+		return 1;
+	}
+	dbmail_mailbox_search(mb);
+	dbmail_imap_session_delete(&s);
 
 	if (strcmp(dumpfile, "-") == 0) {
 		ostream = stdout;
@@ -134,8 +138,8 @@ static int mailbox_dump(u64_t mailbox_idnr, const char *dumpfile,
 			// Flag the selected messages \\Deleted
 			// Following this, dbmail-util -d sets deleted status
 			if (delete_after_dump & 1) {
-				if (db_set_msgflag(*(u64_t *)ids->data, deleted_flag, NULL, IMAPFA_ADD, NULL) < 0) {
-					qerrorf("Error setting flags for message [%llu]\n", *(u64_t *)ids->data);
+				if (db_set_msgflag(*(uint64_t *)ids->data, deleted_flag, NULL, IMAPFA_ADD, NULL) < 0) {
+					qerrorf("Error setting flags for message [%" PRIu64 "]\n", *(uint64_t *)ids->data);
 					result = -1;
 				}
 			}
@@ -143,8 +147,8 @@ static int mailbox_dump(u64_t mailbox_idnr, const char *dumpfile,
 			// Set deleted status on each message
 			// Following this, dbmail-util -p sets purge status
 			if (delete_after_dump & 2) {
-				if (! db_set_message_status(*(u64_t *)ids->data, MESSAGE_STATUS_DELETE)) {
-					qerrorf("Error setting status for message [%llu]\n", *(u64_t *)ids->data);
+				if (! db_set_message_status(*(uint64_t *)ids->data, MESSAGE_STATUS_DELETE)) {
+					qerrorf("Error setting status for message [%" PRIu64 "]\n", *(uint64_t *)ids->data);
 					result = -1;
 				}
 			}
@@ -168,7 +172,7 @@ cleanup:
 	
 static int do_export(char *user, char *base_mailbox, char *basedir, char *outfile, char *search, int delete_after_dump, int recursive)
 {
-	u64_t user_idnr = 0, owner_idnr = 0, mailbox_idnr = 0;
+	uint64_t user_idnr = 0, owner_idnr = 0, mailbox_idnr = 0;
 	char *dumpfile = NULL, *mailbox = NULL, *search_mailbox = NULL, *dir = NULL;
 	GList *children = NULL;
 	int result = 0;
@@ -215,7 +219,7 @@ static int do_export(char *user, char *base_mailbox, char *basedir, char *outfil
 	qerrorf("Exporting [%u] mailboxes for [%s]\n", g_list_length(children), user);
 
 	while (children) {
-		mailbox_idnr = *(u64_t *)children->data;
+		mailbox_idnr = *(uint64_t *)children->data;
 		db_getmailboxname(mailbox_idnr, user_idnr, mailbox);			
 		if (! db_get_mailbox_owner(mailbox_idnr, &owner_idnr)) {
 			qerrorf("Error checking mailbox ownership");
@@ -269,7 +273,7 @@ int main(int argc, char *argv[])
 	openlog(PNAME, LOG_PID, LOG_MAIL);
 	setvbuf(stdout, 0, _IONBF, 0);
 
-	g_mime_init(0);
+	g_mime_init(GMIME_ENABLE_RFC2047_WORKAROUNDS);
 
 	/* get options */
 	opterr = 0;		/* suppress error message from getopt() */

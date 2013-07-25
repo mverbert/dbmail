@@ -1,6 +1,6 @@
 /*
  Copyright (C) 2004 IC & S dbmail@ic-s.nl
- Copyright (c) 2004-2011 NFG Net Facilities Group BV support@nfg.nl
+ Copyright (c) 2004-2012 NFG Net Facilities Group BV support@nfg.nl
 
  This program is free software; you can redistribute it and/or 
  modify it under the terms of the GNU General Public License 
@@ -26,21 +26,29 @@
 
 #define THIS_MODULE "clientsession"
 
-extern serverConfig_t *server_conf;
+extern ServerConfig_T *server_conf;
+extern struct event_base *evbase;
 
-ClientSession_t * client_session_new(client_sock *c)
+ClientSession_T * client_session_new(client_sock *c)
 {
-	char unique_id[UID_SIZE];
+	ClientBase_T *ci;
+	Mempool_T pool = c->pool;
 
-	ClientSession_t * session = g_new0(ClientSession_t,1);
-	clientbase_t *ci;
+	char unique_id[UID_SIZE];
 
 	if (c)
 		ci = client_init(c);
 	else
 		ci = client_init(NULL);
 
+	ClientSession_T * session = mempool_pop(pool, sizeof(ClientSession_T));
+
 	session->state = CLIENTSTATE_INITIAL_CONNECT;
+	session->pool = pool;
+	session->args = p_list_new(pool);
+	session->from = p_list_new(pool);
+	session->rbuff = p_string_new(pool, "");
+	session->messagelst = p_list_new(pool);
 
 	gethostname(session->hostname, sizeof(session->hostname));
 
@@ -48,22 +56,37 @@ ClientSession_t * client_session_new(client_sock *c)
 	create_unique_id(unique_id, 0);
 	session->apop_stamp = g_strdup_printf("<%s@%s>", unique_id, session->hostname);
 
-        event_set(ci->rev, ci->rx, EV_READ|EV_PERSIST, socket_read_cb, (void *)session);
-        event_set(ci->wev, ci->tx, EV_WRITE, socket_write_cb, (void *)session);
+	assert(evbase);
+        ci->rev = event_new(evbase, ci->rx, EV_READ|EV_PERSIST, socket_read_cb, (void *)session);
+        ci->wev = event_new(evbase, ci->tx, EV_WRITE, socket_write_cb, (void *)session);
+	ci_cork(ci);
 
 	session->ci = ci;
-	session->rbuff = g_string_new("");
 
 	return session;
 }
 
-void client_session_reset(ClientSession_t * session)
+void client_session_reset(ClientSession_T * session)
 {
-	dsnuser_free_list(session->rcpt);
-	session->rcpt = NULL;
+	List_T from;
 
-	g_list_destroy(session->from);
-	session->from = NULL;
+	if (session->rcpt)
+		dsnuser_free_list(session->rcpt);
+
+	session->rcpt = p_list_new(session->pool);
+
+	if (session->from) {
+		from = p_list_first(session->from);
+		while (from) {
+			String_T s = p_list_data(from);
+			if (s) p_string_free(s, TRUE);
+			from = p_list_next(from);
+		}
+		from = p_list_first(session->from);
+		p_list_free(&from);
+	}
+
+	session->from = p_list_new(session->pool);
 
 	if (session->apop_stamp) {
 		g_free(session->apop_stamp);
@@ -85,78 +108,149 @@ void client_session_reset(ClientSession_t * session)
 	client_session_reset_parser(session);
 }
 
-void client_session_reset_parser(ClientSession_t *session)
+void client_session_reset_parser(ClientSession_T *session)
 {
 	session->parser_state = FALSE;
 	session->command_type = FALSE;
 	if (session->rbuff) {
-		g_string_truncate(session->rbuff,0);
-		g_string_maybe_shrink(session->rbuff);
+		p_string_truncate(session->rbuff,0);
 	}
 
 	if (session->args) {
-		g_list_destroy(session->args);
-		session->args = NULL;
+		List_T args = p_list_first(session->args);
+		while (p_list_data(args)) {
+			String_T s = p_list_data(args);
+			p_string_free(s, TRUE);
+			if (! p_list_next(args))
+				break;
+			args = p_list_next(args);
+		}
+		p_list_free(&args);
 	}
+	session->args = p_list_new(session->pool);
 }
 
-void client_session_bailout(ClientSession_t **session)
+void client_session_bailout(ClientSession_T **session)
 {
-	ClientSession_t *c = *session;
+	ClientSession_T *c = *session;
+	Mempool_T pool;
+	List_T args = NULL;
+	List_T from = NULL;
+	List_T rcpt = NULL;
+	List_T messagelst = NULL;
 
-	if (! c) return;
+	assert(c);
+
+	ci_cork(c->ci);
+
 	TRACE(TRACE_DEBUG,"[%p]", c);
-
 	// brute force:
 	if (server_conf->no_daemonize == 1) _exit(0);
 
 	client_session_reset(c);
-	c->state = CLIENTSTATE_ANY;
+	c->state = CLIENTSTATE_QUIT_QUEUED;
 	ci_close(c->ci);
-	c->ci = NULL;
-	g_free(c);
+
+	p_string_free(c->rbuff, TRUE);
+
+	if (c->from) {
+		from = p_list_first(c->from);
+		while (p_list_data(from)) {
+			String_T s = p_list_data(from);
+			p_string_free(s, TRUE);
+			if (! p_list_next(from))
+				break;
+			from = p_list_next(from);
+		}
+		from = p_list_first(from);
+		p_list_free(&from);
+	}
+	
+	if (c->rcpt) {
+		rcpt = p_list_first(c->rcpt);
+		while (p_list_data(rcpt)) {
+			Delivery_T *s = p_list_data(rcpt);
+			g_free(s);
+			if (! p_list_next(rcpt))
+				break;
+			rcpt = p_list_next(rcpt);
+		}
+		rcpt = p_list_first(rcpt);
+		p_list_free(&rcpt);
+	}
+	
+	if (c->args) {
+		args = p_list_first(c->args);
+		while (p_list_data(args)) {
+			String_T s = p_list_data(args);
+			p_string_free(s, TRUE);
+			if (! p_list_next(args))
+				break;
+			args = p_list_next(args);
+		}
+		args = p_list_first(args);
+		p_list_free(&args);
+	}
+
+	if (c->messagelst) {
+		messagelst = p_list_first(c->messagelst);
+		while (p_list_data(messagelst)) {
+			struct message *m = p_list_data(messagelst);
+			mempool_push(c->pool, m, sizeof(struct message));
+			if (! p_list_next(messagelst))
+				break;
+			messagelst = p_list_next(messagelst);
+		}
+		messagelst = p_list_first(messagelst);
+		p_list_free(&messagelst);
+	}
+
+	c->args = NULL;
+	c->from = NULL;
+	c->rcpt = NULL;
+	c->messagelst = NULL;
+
+	pool = c->pool;
+	mempool_push(pool, c, sizeof(ClientSession_T));
+	mempool_close(&pool);
 	c = NULL;
 }
 
 void client_session_read(void *arg)
 {
-	int state;
-	ClientSession_t *session = (ClientSession_t *)arg;
-	TRACE(TRACE_DEBUG, "[%p] state: [%d]", session, session->state);
+	ClientSession_T *session = (ClientSession_T *)arg;
 	ci_read_cb(session->ci);
-		
-	state = session->ci->client_state;
+
+	uint64_t have = p_string_len(session->ci->read_buffer);
+	uint64_t need = session->ci->rbuff_size;
+
+	int enough = (need>0?(have >= need):(have > 0));
+	int state = session->ci->client_state;
+
 	if (state & CLIENT_ERR) {
 		TRACE(TRACE_DEBUG,"client_state ERROR");
 		client_session_bailout(&session);
 	} else if (state & CLIENT_EOF) {
-		TRACE(TRACE_NOTICE,"reached EOF");
-		event_del(session->ci->rev);
-		if (session->ci->read_buffer->len < 1)
-			client_session_bailout(&session);
-		else 
+		ci_cork(session->ci);
+		if (enough)
 			session->handle_input(session);
+		else 
+			client_session_bailout(&session);
 	}
-	else if (state & CLIENT_OK || state & CLIENT_AGAIN) {
+	else if (have > 0)
 		session->handle_input(session);
-	}
 }
 
-void client_session_set_timeout(ClientSession_t *session, int timeout)
+void client_session_set_timeout(ClientSession_T *session, int timeout)
 {
-	if (session && (session->state > CLIENTSTATE_ANY) && session->ci && session->ci->timeout) {
-		int current = session->ci->timeout->tv_sec;
-		if (timeout != current) {
-			ci_cork(session->ci);
-			session->ci->timeout->tv_sec = timeout;
-			ci_uncork(session->ci);
-		}
-	}
+	int current = session->ci->timeout->tv_sec;
+	if (timeout != current)
+		session->ci->timeout->tv_sec = timeout;
 }
 
 void socket_read_cb(int fd UNUSED, short what UNUSED, void *arg)
 {
-	ClientSession_t *session = (ClientSession_t *)arg;
+	ClientSession_T *session = (ClientSession_T *)arg;
 	if (what == EV_READ)
 		client_session_read(session); // drain the read-event handle
 	else if (what == EV_TIMEOUT && session->ci->cb_time)
@@ -165,11 +259,15 @@ void socket_read_cb(int fd UNUSED, short what UNUSED, void *arg)
 
 void socket_write_cb(int fd UNUSED, short what UNUSED, void *arg)
 {
-	ClientSession_t *session = (ClientSession_t *)arg;
-	TRACE(TRACE_DEBUG,"[%p] state: [%d]", session, session->state);
+	ClientSession_T *session = (ClientSession_T *)arg;
 
-	if (session->ci->cb_write)
-		session->ci->cb_write(session);
+	if (session->state == CLIENTSTATE_QUIT_QUEUED)
+		return;
+
+	if (! session->ci->cb_write)
+		return;
+
+	session->ci->cb_write(session);
 
 	switch(session->state) {
 		case CLIENTSTATE_INITIAL_CONNECT:
@@ -184,14 +282,15 @@ void socket_write_cb(int fd UNUSED, short what UNUSED, void *arg)
 			client_session_set_timeout(session, server_conf->timeout);
 			break;
 
-		default:
-		case CLIENTSTATE_ANY:
-			break;
-
 		case CLIENTSTATE_LOGOUT:
 		case CLIENTSTATE_QUIT:
 		case CLIENTSTATE_ERROR:
 			client_session_bailout(&session);
+			break;
+
+		default:
+		case CLIENTSTATE_ANY:
+		case CLIENTSTATE_QUIT_QUEUED:
 			break;
 
 

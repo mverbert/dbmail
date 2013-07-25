@@ -1,6 +1,6 @@
 /*
  Copyright (C) 1999-2004 IC & S  dbmail@ic-s.nl
- Copyright (c) 2004-2011 NFG Net Facilities Group BV support@nfg.nl
+ Copyright (c) 2004-2012 NFG Net Facilities Group BV support@nfg.nl
 
  This program is free software; you can redistribute it and/or 
  modify it under the terms of the GNU General Public License 
@@ -21,11 +21,12 @@
 /*
  * list.h: list header */
 
-#ifndef  _LIST_H
-#define  _LIST_H
+#ifndef  DM_LIST_H
+#define  DM_LIST_H
 
 #include <glib.h>
 #include <sys/types.h>
+#include "dm_mempool.h"
 
 GList *g_list_slices(GList *list, unsigned limit);
 GList *g_list_slices_u64(GList *list, unsigned limit);
@@ -38,5 +39,26 @@ GList * g_list_append_printf(GList * list, const char * format, ...);
 void g_list_destroy(GList *list);
 void g_list_merge(GList **a, GList *b, int condition, GCompareFunc func);
 
+/*
+ * provide memory pool based list
+ */
+
+#define T List_T
+
+typedef struct T *T;
+
+extern T  p_list_new(Mempool_T);
+extern T  p_list_append(T, void *);
+extern T  p_list_prepend(T, void *);
+extern T  p_list_last(T);
+extern T  p_list_first(T);
+extern T  p_list_previous(T);
+extern T  p_list_next(T);
+extern T  p_list_remove(T, T);
+extern size_t  p_list_length(T);
+extern void *  p_list_data(T);
+extern void    p_list_free(T *);
+
+#undef T
 
 #endif

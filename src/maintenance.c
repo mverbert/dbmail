@@ -1,6 +1,6 @@
 /*
  Copyright (C) 1999-2004 IC & S  dbmail@ic-s.nl
- Copyright (c) 2004-2011 NFG Net Facilities Group BV support@nfg.nl
+ Copyright (c) 2004-2012 NFG Net Facilities Group BV support@nfg.nl
 
  This program is free software; you can redistribute it and/or 
  modify it under the terms of the GNU General Public License 
@@ -29,8 +29,8 @@
 #define THIS_MODULE "maintenance"
 #define PNAME "dbmail/maintenance"
 
-extern db_param_t _db_params;
-#define DBPFX _db_params.pfx
+extern DBParam_T db_params;
+#define DBPFX db_params.pfx
 
 /* Loudness and assumptions. */
 int yes_to_all = 0;
@@ -46,7 +46,9 @@ char *configFile = DEFAULT_CONFIG_FILE;
 int has_errors = 0;
 int serious_errors = 0;
 
-static int find_time(const char *timespec, timestring_t *timestring);
+static int find_time(const char *timespec, TimeString_T *timestring);
+static int do_move_old(int days, char * mbinbox_name, char * mbtrash_name);
+static int do_erase_old(int days, char * mbtrash_name);
 static int do_check_integrity(void);
 static int do_purge_deleted(void);
 static int do_set_deleted(void);
@@ -78,6 +80,10 @@ int do_showhelp(void) {
 	"               the time syntax is [<hours>h][<minutes>m]\n"
 	"               valid examples: 72h, 4h5m, 10m\n"
 	"     -M        migrate legacy 2.2.x messageblks to mimeparts table\n"
+	"     --erase days  Detele messages older than date in INBOX/Trash \n"       
+	"     --move  days   Move messages from INBOX to INBOX/Trash\n"
+	"     --inbox name  Inbox folder to move from, used in conjunction with --move\n"
+	"     --trash name  Trash folder to move to, used in conjunction with --move\n"
 	"     -m limit  limit migration to [limit] number of physmessages. Default 10000 per run\n"
 	"\nCommon options for all DBMail utilities:\n"
 	"     -f file   specify an alternative config file\n"
@@ -98,19 +104,26 @@ int main(int argc, char *argv[])
 	int check_integrity = 0;
 	int check_iplog = 0, check_replycache = 0;
 	char *timespec_iplog = NULL, *timespec_replycache = NULL;
-	int vacuum_db = 0, purge_deleted = 0, set_deleted = 0, dangling_aliases = 0, rehash = 0;
+	int vacuum_db = 0, purge_deleted = 0, set_deleted = 0, dangling_aliases = 0, rehash = 0, move_old = 0, erase_old = 0;
 	int show_help = 0;
 	int do_nothing = 1;
 	int is_header = 0;
 	int migrate = 0, migrate_limit = 10000;
 	static struct option long_options[] = {
 		{ "rehash", 0, 0, 0 },
+		{ "move", 1, 0, 0 },
+		{ "erase", 1, 0, 0 },
+		{ "trash", 1, 0, 0 },
+		{ "inbox", 1, 0, 0 },
 		{ 0, 0, 0, 0 }
 	};
 	int opt_index = 0;
 	int opt;
+	int days_move = 0 , days_erase = 0;
+	char * mbtrash_name;
+	char * mbinbox_name;
 
-	g_mime_init(0);
+	g_mime_init(GMIME_ENABLE_RFC2047_WORKAROUNDS);
 	openlog(PNAME, LOG_PID, LOG_MAIL);
 	setvbuf(stdout, 0, _IONBF, 0);
 
@@ -124,6 +137,25 @@ int main(int argc, char *argv[])
 			do_nothing = 0;
 			if (strcmp(long_options[opt_index].name,"rehash")==0)
 				rehash = 1;
+
+			if (strcmp(long_options[opt_index].name,"move")==0) {
+				move_old = 1;
+				days_move = atoi(optarg);
+			}
+			if (strcmp(long_options[opt_index].name,"erase")==0) {
+				erase_old = 1;
+				purge_deleted = 1;
+				days_erase = atoi(optarg);
+			}
+
+			if (strcmp(long_options[opt_index].name,"trash")==0) {
+				mbtrash_name = optarg;
+			}
+
+			if (strcmp(long_options[opt_index].name,"inbox")==0) {
+				mbinbox_name = optarg;
+			}
+			
 			break;
 		case 'a':
 			/* This list should be kept up to date. */
@@ -272,6 +304,8 @@ int main(int argc, char *argv[])
 
 	qverbosef("Ok. Connected.\n");
 
+	if (erase_old) do_erase_old(days_erase, mbtrash_name);
+	if (move_old) do_move_old(days_move, mbinbox_name, mbtrash_name);
 	if (check_integrity) do_check_integrity();
 	if (purge_deleted) do_purge_deleted();
 	if (is_header) do_header_cache();
@@ -316,10 +350,10 @@ int main(int argc, char *argv[])
 	return has_errors;
 }
 
-static int db_count_iplog(timestring_t lasttokeep, u64_t *rows)
+static int db_count_iplog(TimeString_T lasttokeep, uint64_t *rows)
 {
-	C c; R r; volatile int t = DM_SUCCESS;
-	field_t to_date_str;
+	Connection_T c; ResultSet_T r; volatile int t = DM_SUCCESS;
+	Field_T to_date_str;
 	assert(rows != NULL);
 	*rows = 0;
 
@@ -340,17 +374,17 @@ static int db_count_iplog(timestring_t lasttokeep, u64_t *rows)
 	return t;
 }
 
-static int db_cleanup_iplog(timestring_t lasttokeep)
+static int db_cleanup_iplog(TimeString_T lasttokeep)
 {
-	field_t to_date_str;
+	Field_T to_date_str;
 	char2date_str(lasttokeep, &to_date_str);
 	return db_update("DELETE FROM %spbsp WHERE since < %s", DBPFX, to_date_str);
 }
 
-static int db_count_replycache(timestring_t lasttokeep, u64_t *rows)
+static int db_count_replycache(TimeString_T lasttokeep, uint64_t *rows)
 {
-	C c; R r; volatile int t = FALSE;
-	field_t to_date_str;
+	Connection_T c; ResultSet_T r; volatile int t = FALSE;
+	Field_T to_date_str;
 	assert(rows != NULL);
 	*rows = 0;
 
@@ -371,16 +405,16 @@ static int db_count_replycache(timestring_t lasttokeep, u64_t *rows)
 	return t;
 }
 
-static int db_cleanup_replycache(timestring_t lasttokeep)
+static int db_cleanup_replycache(TimeString_T lasttokeep)
 {
-	field_t to_date_str;
+	Field_T to_date_str;
 	char2date_str(lasttokeep, &to_date_str);
 	return db_update("DELETE FROM %sreplycache WHERE lastseen < %s", DBPFX, to_date_str);
 }
 
-static int db_count_deleted(u64_t * rows)
+static int db_count_deleted(uint64_t * rows)
 {
-	C c; R r; volatile int t = TRUE;
+	Connection_T c; ResultSet_T r; volatile int t = TRUE;
 	assert(rows != NULL); *rows = 0;
 
 	c = db_con_get();
@@ -408,9 +442,9 @@ static int db_deleted_purge(void)
 	return db_update("DELETE FROM %smessages WHERE status=%d", DBPFX, MESSAGE_STATUS_PURGE);
 }
 
-static int db_deleted_count(u64_t * rows)
+static int db_deleted_count(uint64_t * rows)
 {
-	C c; R r; volatile int t = FALSE;
+	Connection_T c; ResultSet_T r; volatile int t = FALSE;
 	assert(rows); *rows = 0;
 
 	c = db_con_get();
@@ -432,7 +466,7 @@ static int db_deleted_count(u64_t * rows)
 
 int do_purge_deleted(void)
 {
-	u64_t deleted_messages;
+	uint64_t deleted_messages;
 
 	if (no_to_all) {
 		qprintf("\nCounting messages with DELETE status...\n");
@@ -441,7 +475,7 @@ int do_purge_deleted(void)
 			serious_errors = 1;
 			return -1;
 		}
-		qprintf("Ok. [%llu] messages have DELETE status.\n", deleted_messages);
+		qprintf("Ok. [%" PRIu64 "] messages have DELETE status.\n", deleted_messages);
 	}
 	if (yes_to_all) {
 		qprintf("\nDeleting messages with DELETE status...\n");
@@ -457,7 +491,7 @@ int do_purge_deleted(void)
 
 int do_set_deleted(void)
 {
-	u64_t messages_set_to_delete;
+	uint64_t messages_set_to_delete;
 
 	if (no_to_all) {
 		// TODO: Count messages to delete.
@@ -467,7 +501,7 @@ int do_set_deleted(void)
 			serious_errors = 1;
 			return -1;
 		}
-		qprintf("Ok. [%llu] messages need to be set for deletion.\n", messages_set_to_delete);
+		qprintf("Ok. [%" PRIu64 "] messages need to be set for deletion.\n", messages_set_to_delete);
 	}
 	if (yes_to_all) {
 		qprintf("\nSetting DELETE status for deleted messages...\n");
@@ -509,7 +543,7 @@ GList *find_dangling_aliases(const char * const name)
 
 	uids = g_list_first(uids);
 	while (uids) {
-		username = auth_get_userid(*(u64_t *)uids->data);
+		username = auth_get_userid(*(uint64_t *)uids->data);
 		if (!username)
 			dangling = g_list_prepend(dangling, uids->data);
 
@@ -543,7 +577,7 @@ int do_dangling_aliases(void)
 		dangling = g_list_first(dangling);
 		while (dangling) {
 			count++;
-			g_snprintf(deliver_to, 21, "%llu", *(u64_t *)dangling->data);
+			g_snprintf(deliver_to, 21, "%" PRIu64 "", *(uint64_t *)dangling->data);
 			qverbosef("Dangling alias [%s] delivers to nonexistent user [%s]\n",
 				(char *)aliases->data, deliver_to);
 			if (yes_to_all) {
@@ -601,7 +635,7 @@ int do_check_integrity(void)
 	 */
 
 	/* part 3 */
-	start = stop;
+	time(&start);
 	qprintf("\n%s DBMAIL physmessage integrity...\n", action);
 	if ((count = db_icheck_physmessages(cleanup)) < 0) {
 		qerrorf("Failed. An error occurred. Please check log.\n");
@@ -752,7 +786,7 @@ static int do_envelope(void)
 		}
 	}
 
-	g_list_free(g_list_first(lost));
+	g_list_destroy(lost);
 
 	time(&stop);
 	qverbosef("--- checking envelope cache took %g seconds\n",
@@ -816,8 +850,8 @@ int do_header_cache(void)
 
 int do_check_iplog(const char *timespec)
 {
-	u64_t log_count;
-	timestring_t timestring;
+	uint64_t log_count;
+	TimeString_T timestring;
 
 	if (find_time(timespec, &timestring) != 0) {
 		qerrorf("\nFailed to find a timestring: [%s] is not <hours>h<minutes>m.\n",
@@ -833,7 +867,7 @@ int do_check_iplog(const char *timespec)
 			serious_errors = 1;
 			return -1;
 		}
-		qprintf("Ok. [%llu] IP entries are older than [%s].\n",
+		qprintf("Ok. [%" PRIu64 "] IP entries are older than [%s].\n",
 		    log_count, timestring);
 	}
 	if (yes_to_all) {
@@ -852,8 +886,8 @@ int do_check_iplog(const char *timespec)
 
 int do_check_replycache(const char *timespec)
 {
-	u64_t log_count;
-	timestring_t timestring;
+	uint64_t log_count;
+	TimeString_T timestring;
 
 	if (find_time(timespec, &timestring) != 0) {
 		qerrorf("\nFailed to find a timestring: [%s] is not <hours>h<minutes>m.\n",
@@ -869,7 +903,7 @@ int do_check_replycache(const char *timespec)
 			serious_errors = 1;
 			return -1;
 		}
-		qprintf("Ok. [%llu] RC entries are older than [%s].\n",
+		qprintf("Ok. [%" PRIu64 "] RC entries are older than [%s].\n",
 		    log_count, timestring);
 	}
 	if (yes_to_all) {
@@ -922,43 +956,39 @@ int do_rehash(void)
 
 int do_migrate(int migrate_limit)
 {
-	C c; R r;
+	Connection_T c; ResultSet_T r;
 	int id = 0;
 	int count = 0;
 	DbmailMessage *m;
 	
-	qprintf ("Mirgrate legacy 2.2.x messageblks to mimeparts...\n");
+	qprintf ("Migrate legacy 2.2.x messageblks to mimeparts...\n");
 	if (!yes_to_all) {
 		qprintf ("\tmigration skipped. Use -y option to perform mirgration.\n");
 		return 0;
 	}
-	qprintf ("Preparing to migrate %d physmessages.\n", migrate_limit);
+	qprintf ("Preparing to migrate up to %d physmessages.\n", migrate_limit);
 
 	c = db_con_get();
 	TRY
+		db_begin_transaction(c);
 		r = db_query(c, "SELECT DISTINCT(physmessage_id) FROM %smessageblks LIMIT %d", DBPFX, migrate_limit);
 		qprintf ("Migrating %d physmessages...\n", migrate_limit);
 		while (db_result_next(r))
 		{
 			count++;
 			id = db_result_get_u64(r,0);
-			m = dbmail_message_new();
-			m = dbmail_message_retrieve(m, id, DBMAIL_MESSAGE_FILTER_FULL);
-			if(!dm_message_store(m))
-			{
+			m = dbmail_message_new(NULL);
+			m = dbmail_message_retrieve(m, id);
+			if(! dm_message_store(m)) {
 				if(verbose) qprintf ("%d ",id);
 				db_update("DELETE FROM %smessageblks WHERE physmessage_id = %d", DBPFX, id);
 			}
-			else
-			{
-				if(!verbose) qprintf ("migrating physmessage_id: %d\n",id);
-				qprintf ("failed\n");
-				return -1;
-			}
 			dbmail_message_free(m);
 		}
+		db_commit_transaction(c);
 	CATCH(SQLException)
 		LOG_SQLERROR;
+		db_rollback_transaction(c);
 		return -1;
 	FINALLY
 		db_con_close(c);
@@ -975,7 +1005,7 @@ int do_migrate(int migrate_limit)
  *
  * Returns NULL on error.
  */
-int find_time(const char *timespec, timestring_t *timestring)
+int find_time(const char *timespec, TimeString_T *timestring)
 {
 	time_t td;
 	struct tm tm;
@@ -1055,9 +1085,111 @@ int find_time(const char *timespec, timestring_t *timestring)
 	td -= (hour * 3600L + min * 60L);
 
 	tm = *localtime(&td);	/* get components */
-	strftime((char *) timestring, sizeof(timestring_t),
+	strftime((char *) timestring, sizeof(TimeString_T),
 		 "%Y-%m-%d %H:%M:%S", &tm);
 
 	return 0;
 }
 
+/* Delete message from mailbox if it is Trash and the message date less then passed date */
+int do_erase_old(int days, char * mbtrash_name)
+{
+	Connection_T c; PreparedStatement_T s; ResultSet_T r;
+	char expire [DEF_FRAGSIZE];
+	memset(expire,0,sizeof(expire));
+	snprintf(expire, DEF_FRAGSIZE, db_get_sql(SQL_EXPIRE), days);
+
+	c = db_con_get();
+
+	s = db_stmt_prepare(c,"SELECT msg.message_idnr FROM %smessages msg "
+			      "JOIN %sphysmessage phys ON msg.physmessage_id = phys.id "
+			      "JOIN %smailboxes mb ON msg.mailbox_idnr = mb.mailbox_idnr "
+			      "WHERE mb.name = ? AND msg.status < %d "
+			      "AND phys.internal_date < %s ",
+			      DBPFX, DBPFX, DBPFX, MESSAGE_STATUS_DELETE, expire);
+
+	db_stmt_set_str(s, 1, mbtrash_name);
+
+	TRY
+		r = db_stmt_query(s);
+		while(db_result_next(r)) 
+		{
+			uint64_t id = db_result_get_u64(r, 0);
+			qprintf("Deleting message id(%" PRIu64 ")\n", id);
+			db_set_message_status(id,MESSAGE_STATUS_PURGE);
+		}
+	CATCH(SQLException)
+		LOG_SQLERROR;
+	return -1;
+	FINALLY
+		db_con_close(c);
+	END_TRY;
+
+	return 0;
+}
+
+/* Move message to Trash if the message is in INBOX mailbox and date less then passed date. */
+int do_move_old (int days, char * mbinbox_name, char * mbtrash_name)
+{
+	Connection_T c; ResultSet_T r; ResultSet_T r1; PreparedStatement_T s; PreparedStatement_T s1; PreparedStatement_T s2;
+	int skip = 1;
+	char expire [DEF_FRAGSIZE];
+        uint64_t mailbox_to;
+        uint64_t mailbox_from;
+
+	memset(expire,0,sizeof(expire));
+	snprintf(expire, DEF_FRAGSIZE, db_get_sql(SQL_EXPIRE), days);
+
+	c = db_con_get();
+	s = db_stmt_prepare(c,"SELECT msg.message_idnr, mb.owner_idnr, mb.mailbox_idnr FROM %smessages msg "
+			      "JOIN %sphysmessage phys ON msg.physmessage_id = phys.id "
+			      "JOIN %smailboxes mb ON msg.mailbox_idnr = mb.mailbox_idnr "
+			      "WHERE mb.name = ? AND msg.status < %d "
+			      "AND phys.internal_date < %s", 
+			      DBPFX, DBPFX, DBPFX, MESSAGE_STATUS_DELETE, expire);
+
+	s1 = db_stmt_prepare(c, "SELECT mailbox_idnr FROM %smailboxes WHERE owner_idnr = ? AND name = ?", DBPFX);
+	s2 = db_stmt_prepare(c, "UPDATE %smessages SET mailbox_idnr = ? WHERE message_idnr = ?", DBPFX);
+
+	db_stmt_set_str(s, 1, mbinbox_name);
+
+	TRY
+		r = db_stmt_query(s);
+		while (db_result_next(r))
+		{
+			skip = 1;
+			uint64_t id = db_result_get_u64(r, 0);
+			uint64_t user_id = db_result_get_u64(r, 1);
+			mailbox_from = db_result_get_u64(r, 2);
+
+			db_stmt_set_u64(s1,1,user_id);
+			db_stmt_set_str(s1,2,mbtrash_name);
+
+			r1 = db_stmt_query(s1);
+			if (db_result_next(r1)) {
+				mailbox_to = db_result_get_u64(r1, 0);
+				skip = 0;
+			} 
+
+			if (!skip) {
+				db_stmt_set_u64(s2,1,mailbox_to);
+				db_stmt_set_u64(s2,2,id);
+				db_stmt_exec(s2);
+				db_mailbox_seq_update(mailbox_to);
+				db_mailbox_seq_update(mailbox_from);
+			}
+			else {
+				qprintf("User(%" PRIu64 ") doesn't has mailbox(%s)\n", user_id, mbtrash_name);
+			}
+		}
+
+	CATCH(SQLException)
+		LOG_SQLERROR;
+		return -1;
+	FINALLY
+		db_con_close(c);
+	END_TRY;
+
+	return 0;
+
+}

@@ -1,7 +1,7 @@
 /*
  * 
  
- Copyright (c) 2004-2011 NFG Net Facilities Group BV support@nfg.nl
+ Copyright (c) 2004-2012 NFG Net Facilities Group BV support@nfg.nl
 
  This program is free software; you can redistribute it and/or 
  modify it under the terms of the GNU General Public License 
@@ -29,16 +29,19 @@
  *
  */
 
-#ifndef _DBMAIL_MAILBOX_H
-#define _DBMAIL_MAILBOX_H
+#ifndef DM_MAILBOX_H
+#define DM_MAILBOX_H
 
 #include "dbmail.h"
 #include "dm_mailboxstate.h"
 
 typedef struct {
-	u64_t id;
-	u64_t owner_id;
-	u64_t size;
+	Mempool_T pool;
+	gboolean freepool;
+
+	uint64_t id;
+	uint64_t owner_id;
+	uint64_t size;
 	gboolean uid; 
 
 	MailboxState_T mbstate;	// cache mailbox metadata;
@@ -46,19 +49,19 @@ typedef struct {
 	GList *sorted;		// ordered list of UID values
 	GTree *found;		// search result (key: uid, value: msn)
 	GNode *search;
-	gchar *charset;		// charset used during search/sort
+	const char *charset;		// charset used during search/sort
 
 } DbmailMailbox;
 
 
-DbmailMailbox * dbmail_mailbox_new(u64_t id);
+DbmailMailbox * dbmail_mailbox_new(Mempool_T, uint64_t);
 int dbmail_mailbox_open(DbmailMailbox *self);
 int dbmail_mailbox_sort(DbmailMailbox *self);
 int dbmail_mailbox_search(DbmailMailbox *self);
 
 GTree * dbmail_mailbox_get_msginfo(DbmailMailbox *self);
 
-u64_t dbmail_mailbox_get_id(DbmailMailbox *self);
+uint64_t dbmail_mailbox_get_id(DbmailMailbox *self);
 
 void dbmail_mailbox_set_uid(DbmailMailbox *self, gboolean uid);
 gboolean dbmail_mailbox_get_uid(DbmailMailbox *self);
@@ -71,7 +74,7 @@ char * dbmail_mailbox_ids_as_string(DbmailMailbox *self, gboolean uid, const cha
 char * dbmail_mailbox_sorted_as_string(DbmailMailbox *self);
 char * dbmail_mailbox_orderedsubject(DbmailMailbox *self);
 
-int dbmail_mailbox_build_imap_search(DbmailMailbox *self, char **search_keys, u64_t *idx, search_order_t order);
+int dbmail_mailbox_build_imap_search(DbmailMailbox *self, String_T *search_keys, uint64_t *idx, search_order order);
 
 GTree * dbmail_mailbox_get_set(DbmailMailbox *self, const char *set, gboolean uid);
 

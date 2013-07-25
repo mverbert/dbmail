@@ -1,5 +1,5 @@
 /*
- Copyright (c) 2004-2011 NFG Net Facilities Group BV support@nfg.nl
+ Copyright (c) 2004-2012 NFG Net Facilities Group BV support@nfg.nl
 
  This program is free software; you can redistribute it and/or 
  modify it under the terms of the GNU General Public License 
@@ -27,6 +27,7 @@ struct T {
 	char *sock_str;
 	struct sockaddr_in *socket;
 	short int mask;
+	const char repr[FIELDSIZE];
 };
 
 T cidr_new(const char *str)
@@ -40,8 +41,8 @@ T cidr_new(const char *str)
 	assert(str != NULL);
 	
 	self = (T)g_malloc0(sizeof(*self));
-	self->sock_str = strdup(str);
-	self->socket = (struct sockaddr_in *)malloc(sizeof(struct sockaddr_in));
+	self->sock_str = g_strdup(str);
+	self->socket = (struct sockaddr_in *)g_malloc0(sizeof(struct sockaddr_in));
 	self->mask = 32;
 
 	addr = g_strdup(str);
@@ -86,8 +87,8 @@ T cidr_new(const char *str)
 	self->socket->sin_family = AF_INET;
 	self->socket->sin_port = strtol(port,NULL,10);
 	if (! inet_aton(addr,&self->socket->sin_addr)) {
-		free(haddr);
-		free(hport);
+		g_free(haddr);
+		g_free(hport);
 		cidr_free(&self);
 		return NULL;
 	}
@@ -95,16 +96,10 @@ T cidr_new(const char *str)
 	if (self->socket->sin_addr.s_addr == 0)
 		self->mask = 0;
 		
-	free(haddr);
-	free(hport);
-	
-	TRACE(TRACE_DEBUG,"%s", cidr_repr(self));
-	return self;
-}
+	g_free(haddr);
+	g_free(hport);
 
-char * cidr_repr(T self)
-{
-	return g_strdup_printf("struct cidrfilter {\n"
+	g_snprintf((char *)self->repr, FIELDSIZE-1, "struct cidrfilter {\n"
 			"\tsock_str: %s;\n"
 			"\tsocket->sin_addr: %s;\n"
 			"\tsocket->sin_port: %d;\n"
@@ -115,6 +110,14 @@ char * cidr_repr(T self)
 			self->socket->sin_port,
 			self->mask
 			);
+
+	TRACE(TRACE_DEBUG,"%s", cidr_repr(self));
+	return self;
+}
+
+const char * cidr_repr(T self)
+{
+	return self->repr;
 }
 
 int cidr_match(T base, T test)
@@ -151,10 +154,10 @@ void cidr_free(T *self)
 	if (! s) return;
 
 	if (s->socket)
-		free(s->socket);
+		g_free(s->socket);
 	if (s->sock_str)
-		free(s->sock_str);
-	if (s) free(s);
+		g_free(s->sock_str);
+	if (s) g_free(s);
 
 	s = NULL;
 }

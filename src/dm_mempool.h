@@ -1,6 +1,5 @@
 /*
-  
- Copyright (c) 2004-2011 NFG Net Facilities Group BV support@nfg.nl
+ Copyright (c) 2004-2012 NFG Net Facilities Group BV support@nfg.nl
 
  This program is free software; you can redistribute it and/or 
  modify it under the terms of the GNU General Public License 
@@ -16,30 +15,23 @@
  You should have received a copy of the GNU General Public License
  along with this program; if not, write to the Free Software
  Foundation, Inc., 675 Mass Ave, Cambridge, MA 02139, USA.
+ 
 */
+#ifndef DM_MEMPOOL_H
+#define DM_MEMPOOL_H
+/*
+ * provide simple memory pool
+ */
+#define M Mempool_T
 
-#ifndef DM_CACHE_H
-#define DM_CACHE_H
+typedef struct M *M;
 
-#include "dm_memblock.h"
+extern M      mempool_open(void);
+extern void * mempool_pop(M, size_t);
+extern void * mempool_resize(M, void *, size_t, size_t);
+extern void   mempool_push(M, void *, size_t);
+extern void   mempool_close(M *);
 
-#define IMAP_CACHE_MEMDUMP 1
-#define IMAP_CACHE_TMPDUMP 2
+#undef M
 
-#define T Cache_T
-
-typedef struct T *T;
-
-extern T     Cache_new(void);
-extern u64_t Cache_set_dump(T C, char *buf, int dumptype);
-extern void  Cache_clear(T C);
-extern u64_t Cache_update(T C, DbmailMessage *message, int filter);
-extern u64_t Cache_get_size(T C);
-extern void  Cache_set_memdump(T C, Mem_T M);
-extern Mem_T Cache_get_memdump(T C);
-extern void  Cache_set_tmpdump(T C, Mem_T M);
-extern Mem_T Cache_get_tmpdump(T C);
-extern void  Cache_free(T *C);
-
-#undef T
 #endif

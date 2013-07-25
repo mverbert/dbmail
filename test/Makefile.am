@@ -24,17 +24,16 @@ TESTS=check_dbmail_common \
 	check_dbmail_auth \
 	check_dbmail_misc \
 	check_dbmail_list \
-	check_dbmail_memblock \
+	check_dbmail_mempool \
 	check_dbmail_user \
 	check_dbmail_util \
 	check_dbmail_dsn \
 	check_dbmail_capa \
 	check_dbmail_sset \
+	check_dbmail_string \
 	check_dbmail_db
 
 IMAPD = $(top_srcdir)/src/dm_quota.c \
-        $(top_srcdir)/src/dm_cache.c \
-        $(top_srcdir)/src/dm_memblock.c \
         $(top_srcdir)/src/imap4.c \
         $(top_srcdir)/src/imapcommands.c \
         $(top_srcdir)/src/dbmail-imapsession.c
@@ -57,9 +56,9 @@ check_dbmail_list_SOURCES=check_dbmail_list.c
 check_dbmail_list_LDADD=$(CHECK_LDADD)
 check_dbmail_list_INCLUDES=@CHECK_CFLAGS@
 
-check_dbmail_memblock_SOURCES=check_dbmail_memblock.c $(top_srcdir)/src/dm_memblock.c
-check_dbmail_memblock_LDADD=$(CHECK_LDADD)
-check_dbmail_memblock_INCLUDES=@CHECK_CFLAGS@
+check_dbmail_mempool_SOURCES=check_dbmail_mempool.c
+check_dbmail_mempool_LDADD=$(CHECK_LDADD)
+check_dbmail_mempool_INCLUDES=@CHECK_CFLAGS@
 
 check_dbmail_util_SOURCES=check_dbmail_util.c
 check_dbmail_util_LDADD=$(CHECK_LDADD)
@@ -108,4 +107,8 @@ check_dbmail_capa_INCLUDES=@CHECK_CFLAGS@
 check_dbmail_sset_SOURCES=check_dbmail_sset.c $(top_srcdir)/src/dm_sset.c
 check_dbmail_sset_LDADD=$(CHECK_LDADD)
 check_dbmail_sset_INCLUDES=@CHECK_CFLAGS@
+
+check_dbmail_string_SOURCES=check_dbmail_string.c 
+check_dbmail_string_LDADD=$(CHECK_LDADD)
+check_dbmail_string_INCLUDES=@CHECK_CFLAGS@
 endif

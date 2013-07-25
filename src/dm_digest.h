@@ -16,19 +16,18 @@
  along with this program; if not, write to the Free Software
  Foundation, Inc., 675 Mass Ave, Cambridge, MA 02139, USA.
 
- $Id: md5.h 1891 2005-10-03 10:01:21Z paul $
 */
 
-#ifndef _DM_DIGEST_H
-#define _DM_DIGEST_H
+#ifndef DM_DIGEST_H
+#define DM_DIGEST_H
 
-char *dm_digest(const unsigned char * hash, hashid type);
-char *dm_tiger(const char * const s);
-char *dm_sha1(const char * const s);
-char *dm_sha256(const char * const s);
-char *dm_sha512(const char * const s);
-char *dm_whirlpool(const char * const s);
-char *dm_md5(const char * const s);
-char *dm_md5_base64(const char * const s);
+int dm_digest(const unsigned char * hash, hashid type, char *);
+int dm_tiger(const char * const s, char *);
+int dm_sha1(const char * const s, char *);
+int dm_sha256(const char * const s, char *);
+int dm_sha512(const char * const s, char *);
+int dm_whirlpool(const char * const s, char *);
+int dm_md5(const char * const s, char *);
+int dm_md5_base64(const char * const s, char *);
 
 #endif

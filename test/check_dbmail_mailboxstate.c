@@ -1,5 +1,5 @@
 /*
- *   Copyright (c) 2005-2011 NFG Net Facilities Group BV support@nfg.nl
+ *   Copyright (c) 2005-2012 NFG Net Facilities Group BV support@nfg.nl
  *
  *   This program is free software; you can redistribute it and/or
  *   modify it under the terms of the GNU General Public License
@@ -36,17 +36,31 @@
 
 extern char *configFile;
 
+#define TESTBOX "testbox.TMP"
+uint64_t testboxid = 0;
+uint64_t testuserid = 0;
+
 /*
  *
  * the test fixtures
  *
  */
-static u64_t get_mailbox_id(const char *name)
+static uint64_t get_mailbox_id(const char *name)
 {
-	u64_t id, owner;
-	auth_user_exists("testuser1",&owner);
-	db_find_create_mailbox(name, BOX_COMMANDLINE, owner, &id);
+	uint64_t id;
+	auth_user_exists("testuser1",&testuserid);
+	db_find_create_mailbox(name, BOX_COMMANDLINE, testuserid, &id);
 	return id;
+}
+
+static void insert_message(void)
+{
+	uint64_t newmsgidnr = 0;
+	DbmailMessage *message;
+	message = dbmail_message_new(NULL);
+	message = dbmail_message_init_with_string(message,multipart_message);
+	dbmail_message_store(message);
+	db_copymsg(message->msg_idnr, testboxid, testuserid, &newmsgidnr, TRUE);
 }
 
 void setup(void)
@@ -56,18 +70,38 @@ void setup(void)
 	GetDBParams();
 	db_connect();
 	auth_connect();
+	g_mime_init(GMIME_ENABLE_RFC2047_WORKAROUNDS);
+	testboxid = get_mailbox_id(TESTBOX);
 }
 
 void teardown(void)
 {
+	db_delete_mailbox(testboxid, 0, 0);
 	db_disconnect();
 }
 
 START_TEST(test_createdestroy)
 {
-	u64_t id = get_mailbox_id("INBOX");
-	MailboxState_T M = MailboxState_new(id);
+	uint64_t id = get_mailbox_id("INBOX");
+	MailboxState_T M = MailboxState_new(NULL, id);
 	MailboxState_free(&M);
+}
+END_TEST
+
+START_TEST(test_metadata)
+{
+	MailboxState_T M = MailboxState_new(NULL, testboxid);
+	fail_unless(MailboxState_getUnseen(M) == 0);
+	fail_unless(MailboxState_getRecent(M) == 0);
+	fail_unless(MailboxState_getExists(M) == 0);
+
+	insert_message();
+
+	MailboxState_count(M);
+
+	fail_unless(MailboxState_getUnseen(M) == 1);
+	fail_unless(MailboxState_getRecent(M) == 1);
+	fail_unless(MailboxState_getExists(M) == 1);
 }
 END_TEST
 
@@ -81,19 +115,19 @@ START_TEST(test_mbxinfo)
 {
 	MailboxState_T N, M;
 	GTree *mbxinfo = g_tree_new_full((GCompareDataFunc)ucmpdata,NULL,(GDestroyNotify)g_free,(GDestroyNotify)mailboxstate_destroy);
-	u64_t *k1, *k2;
-	u64_t id = get_mailbox_id("INBOX");
+	uint64_t *k1, *k2;
+	uint64_t id = get_mailbox_id("INBOX");
 
-	k1 = g_new0(u64_t,1);
-	k2 = g_new0(u64_t,1);
+	k1 = g_new0(uint64_t,1);
+	k2 = g_new0(uint64_t,1);
 
 	*k1 = id;
 	*k2 = id;
 
-	N = MailboxState_new(id);
+	N = MailboxState_new(NULL, id);
 	g_tree_replace(mbxinfo, k1, N);
 
-	M = MailboxState_new(id);
+	M = MailboxState_new(NULL, id);
 	g_tree_replace(mbxinfo, k2, M);
 
 	g_tree_destroy(mbxinfo);
@@ -110,6 +144,7 @@ Suite *dbmail_common_suite(void)
 	
 	tcase_add_checked_fixture(tc_state, setup, teardown);
 	tcase_add_test(tc_state, test_createdestroy);
+	tcase_add_test(tc_state, test_metadata);
 	tcase_add_test(tc_state, test_mbxinfo);
 
 	return s;

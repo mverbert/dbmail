@@ -95,17 +95,6 @@ def strip_crlf(s):
     return string.replace(s, '\r', '')
 
 
-def getFreshbox(name):
-    assert(name)
-    cmd = './contrib/mailbox2dbmail/mailbox2dbmail ' \
-            '-u testuser1 -t mbox -m test-scripts/testbox ' \
-            '-b "%s" -p ./src/dbmail-deliver ' \
-            '-f /etc/dbmail/dbmail.conf' % name
-    s, o = commands.getstatusoutput(cmd)
-    if s:
-        raise Exception(o)
-
-
 class testImapServer(unittest.TestCase):
     maxDiff = None
 
@@ -236,7 +225,11 @@ class testImapServer(unittest.TestCase):
             contains a list of `EXPUNGE' message numbers in order received.
         """
 
-        getFreshbox('testexpungebox')
+        self.o.create('testexpungebox')
+        for i in range(0, 11):
+            self.o.append('testexpungebox', '\Flagged Userflag',
+                          "\" 3-Mar-2006 07:15:00 +0200 \"",
+                          str(TESTMSG['strict822']))
 
         p = getsock()
         #p.debug = 4
@@ -244,8 +237,6 @@ class testImapServer(unittest.TestCase):
 
         self.o.select('testexpungebox')
         p.select('testexpungebox')
-
-        time.sleep(1)
 
         self.o.store('5:*', '+FLAGS', '\Deleted')
         msnlist = self.o.expunge()[1]
@@ -276,20 +267,20 @@ class testImapServer(unittest.TestCase):
         # OE query
         result = self.o.fetch(
             id,
-            "(BODY.PEEK[HEADER.FIELDS (References X-Ref X-Priority " \
-            "X-MSMail-Priority X-MSOESRec Newsgroups)] ENVELOPE " \
+            "(BODY.PEEK[HEADER.FIELDS (References X-Ref X-Priority "
+            "X-MSMail-Priority X-MSOESRec Newsgroups)] ENVELOPE "
             "RFC822.SIZE UID FLAGS INTERNALDATE)")
         self.assertEquals(len(result[1]), 5)
-        expect = [(' (("somewhere.foo" NIL "somewher" "foo.org")) ' \
-                   '(("somewhere.foo" NIL "somewher" "foo.org")) ' \
-                   '(("somewhere.foo" NIL "somewher" "foo.org")) ' \
-                   '(("test user" NIL "testuser" "foo.org")) ' \
-                   '((NIL NIL "somewher" "foo.org")(NIL NIL "other" ' \
-                   '"bar.org")) NIL {81}', '"Message from "Test User" ' \
-                   '<testuser@test.org> of "Sat, 14 Dec 2002 09:17:00 ' \
+        expect = [(' (("somewhere.foo" NIL "somewher" "foo.org")) '
+                   '(("somewhere.foo" NIL "somewher" "foo.org")) '
+                   '(("somewhere.foo" NIL "somewher" "foo.org")) '
+                   '(("test user" NIL "testuser" "foo.org")) '
+                   '((NIL NIL "somewher" "foo.org")(NIL NIL "other" '
+                   '"bar.org")) NIL {81}', '"Message from "Test User" '
+                   '<testuser@test.org> of "Sat, 14 Dec 2002 09:17:00 '
                    'CST."'),
                   (' {36}', '<"114.5862946l.21522l.0l"@localhost>'),
-                  (') BODY[HEADER.FIELDS (References X-Ref X-Priority ' \
+                  (') BODY[HEADER.FIELDS (References X-Ref X-Priority '
                    'X-MSMail-Priority X-MSOESRec Newsgroups)] {2}',
                    '\r\n'), ')']
         self.assertEquals(result[1][1:], expect)
@@ -311,15 +302,15 @@ class testImapServer(unittest.TestCase):
         self.assertEquals(result[0], 'OK')
 
         result = self.o.fetch(id, "(ENVELOPE)")
-        expect = [('1 (ENVELOPE ("Mon, 26 Sep 2005 13:26:39 +0200" ' \
+        expect = [('1 (ENVELOPE ("Mon, 26 Sep 2005 13:26:39 +0200" '
                    '{21}', 'dbmail "test" message'),
-                  (' (("somewhere.foo" NIL "somewher" "foo.org")) ' \
-                   '(("somewhere.foo" NIL "somewher" "foo.org")) ' \
-                   '(("somewhere.foo" NIL "somewher" "foo.org")) ' \
-                   '(("test user" NIL "testuser" "foo.org")) ' \
-                   '((NIL NIL "somewher" "foo.org")(NIL NIL "other" ' \
+                  (' (("somewhere.foo" NIL "somewher" "foo.org")) '
+                   '(("somewhere.foo" NIL "somewher" "foo.org")) '
+                   '(("somewhere.foo" NIL "somewher" "foo.org")) '
+                   '(("test user" NIL "testuser" "foo.org")) '
+                   '((NIL NIL "somewher" "foo.org")(NIL NIL "other" '
                    '"bar.org")) NIL {81}',
-                   '"Message from "Test User" <testuser@test.org> ' \
+                   '"Message from "Test User" <testuser@test.org> '
                    'of "Sat, 14 Dec 2002 09:17:00 CST."'),
                   (' {36}', '<"114.5862946l.21522l.0l"@localhost>'), '))']
         self.assertEquals(result[0], 'OK')
@@ -338,8 +329,8 @@ class testImapServer(unittest.TestCase):
 
         # TB query
         result = self.o.fetch(
-            id, "(UID RFC822.SIZE FLAGS BODY.PEEK[HEADER.FIELDS " \
-            "(From To Cc Subject Date Message-ID Priority X-Priority " \
+            id, "(UID RFC822.SIZE FLAGS BODY.PEEK[HEADER.FIELDS "
+            "(From To Cc Subject Date Message-ID Priority X-Priority "
             "References Newsgroups In-Reply-To Content-Type)])")
         self.assertEquals(result[0], 'OK')
 
@@ -527,8 +518,12 @@ class testImapServer(unittest.TestCase):
             messages, else value of `RECENT' response.
         """
         readonly = 1
+        self.o.create('recenttestbox')
+        for i in range(0, 11):
+            self.o.append('recenttestbox', '\Flagged Userflag',
+                          "\" 3-Mar-2006 07:15:00 +0200 \"",
+                          str(TESTMSG['strict822']))
 
-        getFreshbox('recenttestbox')
         self.o.select('recenttestbox', readonly)
         result = self.o.untagged_responses
         self.assertEquals(
@@ -775,7 +770,8 @@ class testImapServer(unittest.TestCase):
         self.assertEquals(len(result[1]) > 0, True)
         self.o.create('testuidcopy')
         result = self.o.uid('COPY', '*', 'testuidcopy')
-        #print result
+        self.assertEquals(result[0], 'OK')
+        result = self.o.uid('THREAD', 'ORDEREDSUBJECT', 'US-ASCII', 'ALL')
         self.assertEquals(result[0], 'OK')
 
     def testUnsubscribe(self):

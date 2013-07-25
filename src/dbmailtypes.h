@@ -1,7 +1,7 @@
 /*
 
  Copyright (C) 1999-2004 IC & S  dbmail@ic-s.nl
- Copyright (c) 2004-2011 NFG Net Facilities Group BV support@nfg.nl
+ Copyright (c) 2004-2012 NFG Net Facilities Group BV support@nfg.nl
 
  This program is free software; you can redistribute it and/or 
  modify it under the terms of the GNU General Public License 
@@ -27,10 +27,11 @@
  *
  */
 
-#ifndef _DBMAILTYPES_H
-#define _DBMAILTYPES_H
+#ifndef DBMAILTYPES_H
+#define DBMAILTYPES_H
 
 #include "dbmail.h"
+#include "dm_mempool.h"
 
 // start worker threads per client
 //#define DM_CLIENT_THREADS
@@ -46,7 +47,7 @@
 #define UID_SIZE 70
 #define IPNUM_LEN 32
 #define IPLEN 32
-#define BACKLOG 16
+#define BACKLOG 128
 
 #define DM_SOCKADDR_LEN 108
 #define DM_USERNAME_LEN 100
@@ -58,15 +59,12 @@
  * simple SELECT ... WHERE ... statement */
 #define DM_ORA_MAX_BYTES_LOB_CMP 4000
 
-/** use 64-bit unsigned integers as common data type */
-typedef unsigned long long u64_t;
-
 typedef enum {
 	DM_DRIVER_SQLITE	= 1,
 	DM_DRIVER_MYSQL		= 2,
 	DM_DRIVER_POSTGRESQL	= 3,
 	DM_DRIVER_ORACLE	= 4
-} dm_driver_t;
+} Driver_T;
 
 typedef enum {
 	DM_EQUERY 	= -1,
@@ -88,117 +86,100 @@ typedef enum {
 	MESSAGE_STATUS_UNUSED  = 4,
 	MESSAGE_STATUS_INSERT  = 5,
 	MESSAGE_STATUS_ERROR   = 6
-} MessageStatus_t;
+} MessageStatus_T;
 
-/** field_t is used for storing configuration values */
-typedef char field_t[FIELDSIZE];
+/** Field_T is used for storing configuration values */
+typedef char Field_T[FIELDSIZE];
 
-/** size of a timestring_t field */
+/** size of a TimeString_T field */
 #define TIMESTRING_SIZE 30
 
-/** timestring_t is used for holding timestring */
-typedef char timestring_t[TIMESTRING_SIZE];
+/** TimeString_T is used for holding timestring */
+typedef char TimeString_T[TIMESTRING_SIZE];
 
 /** parameters for the database connection */
 typedef struct {
-	dm_driver_t	db_driver; // 
-	field_t driver;         /**< database driver: mysql, pgsql, sqlite */
-	field_t authdriver;     /**< authentication driver: sql, ldap */
-	field_t sortdriver;     /**< sort driver: sieve or nothing at all */
-	field_t host;		/**< hostname or ip address of database server */
-	field_t user;		/**< username to connect with */
-	field_t pass;		/**< password of user */
-	field_t db;		/**< name of database to connect with */
+	Field_T dburi;
+	Driver_T db_driver; // 
+	Field_T driver;         /**< database driver: mysql, pgsql, sqlite */
+	Field_T authdriver;     /**< authentication driver: sql, ldap */
+	Field_T sortdriver;     /**< sort driver: sieve or nothing at all */
+	Field_T host;		/**< hostname or ip address of database server */
+	Field_T user;		/**< username to connect with */
+	Field_T pass;		/**< password of user */
+	Field_T db;		/**< name of database to connect with */
 	unsigned int port;	/**< port number of database server */
-	field_t sock;		/**< path to local unix socket (local connection) */
-	field_t pfx;		/**< prefix for tables e.g. dbmail_ */
+	Field_T sock;		/**< path to local unix socket (local connection) */
+	Field_T pfx;		/**< prefix for tables e.g. dbmail_ */
 	unsigned int max_db_connections; /**< maximum connections the pool will create with the database */
 	unsigned int serverid;	/**< unique id for dbmail instance used in clusters */
-	field_t encoding;	/**< character encoding to use */
+	Field_T encoding;	/**< character encoding to use */
 	unsigned int query_time_info;
 	unsigned int query_time_notice;
 	unsigned int query_time_warning;
 	unsigned int query_timeout;
-} db_param_t;
-
-/** configuration items */
-typedef struct {
-	field_t name;		/**< name of configuration item */
-	field_t value;		/**< value of configuration item */
-} item_t;
-/* dbmail-message */
+} DBParam_T;
 
 enum DBMAIL_MESSAGE_CLASS {
 	DBMAIL_MESSAGE,
 	DBMAIL_MESSAGE_PART
 };
 
-typedef enum DBMAIL_MESSAGE_FILTER_TYPES { 
+enum DBMAIL_MESSAGE_FILTER_TYPES { 
 	DBMAIL_MESSAGE_FILTER_FULL = 1,
 	DBMAIL_MESSAGE_FILTER_HEAD,
 	DBMAIL_MESSAGE_FILTER_BODY
-} message_filter_t;
+};
 
 typedef struct {
-	u64_t id;
-	u64_t physid;
+	// Memory Pool
+	Mempool_T pool;
+	gboolean freepool;
+
+	// ID
+	uint64_t id;
+	uint64_t msg_idnr;
+	
+	// scanned values
+	const char *charset;
 	time_t internal_date;
 	int internal_date_gmtoff;
-	GString *envelope_recipient;
+	String_T envelope_recipient;
+	
+	// Data access
 	enum DBMAIL_MESSAGE_CLASS klass;
 	GMimeObject *content;
-	gchar *raw_content;
-	GRelation *headers;
+	GMimeStream *stream;
+
+	// Mappings
 	GHashTable *header_dict;
 	GTree *header_name;
 	GTree *header_value;
-	gchar *charset;
+	
+	// storage 
 	int part_key;
 	int part_depth;
 	int part_order;
-	FILE *tmp;
+
 } DbmailMessage;
 
 /**********************************************************************
  *                              POP3
 **********************************************************************/
-/** 
- * all POP3 commands */
-typedef enum {
-	POP3_QUIT,
-	POP3_USER,
-	POP3_PASS,
-	POP3_STAT,
-	POP3_LIST,
-	POP3_RETR,
-	POP3_DELE,
-	POP3_NOOP,
-	POP3_LAST,
-	POP3_RSET,
-	POP3_UIDL,
-	POP3_APOP,
-	POP3_AUTH,
-	POP3_TOP,
-	POP3_CAPA,
-	POP3_STLS,
-	POP3_FAIL
-} Pop3Cmd_t;
 
-
-/** all virtual_ definitions are session specific
- *  when a RSET occurs all will be set to the real values */
 struct message {
-	u64_t msize;	  /**< message size */
-	u64_t messageid;  /**< messageid (from database) */
-	u64_t realmessageid; /**< ? */
+	uint64_t msize;	  /**< message size */
+	uint64_t messageid;  /**< messageid (from database) */
+	uint64_t realmessageid; /**< ? */
 	char uidl[UID_SIZE]; /**< unique id */
-	MessageStatus_t messagestatus;
-	MessageStatus_t virtual_messagestatus;
+	MessageStatus_T messagestatus;
+	MessageStatus_T virtual_messagestatus;
 };
 
-/*
- * define some IMAP symbols
- */
+
+/**********************************************************************
+ *                              IMAP
+**********************************************************************/
 
 enum IMAP_COMMAND_TYPES { 
 	IMAP_COMM_NONE,			// 0
@@ -254,26 +235,16 @@ typedef enum {
 	CLIENTSTATE_QUIT			= 5,
 	CLIENTSTATE_ERROR			= 6,
 	CLIENTSTATE_QUIT_QUEUED			= 7
-} clientstate_t;
+} ClientState_T;
 
-enum IMAP4_FLAGS { 
-	IMAPFLAG_SEEN		= 0x01, 
-	IMAPFLAG_ANSWERED	= 0x02,
-	IMAPFLAG_DELETED	= 0x04, 
-	IMAPFLAG_FLAGGED	= 0x08,
-	IMAPFLAG_DRAFT		= 0x10, 
-	IMAPFLAG_RECENT		= 0x20
-};
-
-typedef enum {
+enum {
 	IMAP_FLAG_SEEN,
 	IMAP_FLAG_ANSWERED,
 	IMAP_FLAG_DELETED,
 	IMAP_FLAG_FLAGGED,
 	IMAP_FLAG_DRAFT,
 	IMAP_FLAG_RECENT
-} imap_flag_t;
-
+};
 
 enum IMAP4_PERMISSION { 
 	IMAPPERM_READ		= 0x01,
@@ -288,12 +259,12 @@ enum IMAP4_FLAG_ACTIONS {
 };
 
 enum BODY_FETCH_ITEM_TYPES { 
-	BFIT_TEXT, 
-	BFIT_HEADER, 
-	BFIT_MIME,
-	BFIT_HEADER_FIELDS,
-	BFIT_HEADER_FIELDS_NOT, 
-	BFIT_TEXT_SILENT
+	BFIT_TEXT               = 1, 
+	BFIT_HEADER             = 2, 
+	BFIT_MIME               = 3,
+	BFIT_HEADER_FIELDS      = 4,
+	BFIT_HEADER_FIELDS_NOT  = 5, 
+	BFIT_TEXT_SILENT        = 6
 };
 
 
@@ -302,6 +273,7 @@ enum BODY_FETCH_ITEM_TYPES {
 
 // client_thread
 typedef struct  {
+	Mempool_T pool;
 	int sock;
 	SSL *ssl;                       /* SSL/TLS context for this client */
 	gboolean ssl_state;		/* SSL_accept done or not */
@@ -321,11 +293,11 @@ typedef struct  {
 #define CLIENT_EOF	4
 
 typedef struct {
-	int rx, tx;			/* read and write filehandles */
-	u64_t bytes_rx;			/* read byte counter */
-	u64_t bytes_tx;			/* write byte counter */
-	SSL *ssl;                       /* SSL/TLS context for this client */
-	gboolean ssl_state;		/* SSL_accept done or not */
+	Mempool_T pool;
+	client_sock *sock;
+	int rx, tx;                     /* read and write filehandles */
+	uint64_t bytes_rx;		/* read byte counter */
+	uint64_t bytes_tx;		/* write byte counter */
 	int client_state;		/* CLIENT_OK, CLIENT_AGAIN, CLIENT_EOF */
 
 	struct event *pev;		/* self-pipe event */
@@ -337,9 +309,9 @@ typedef struct {
 	int (*cb_error) (int fd, int error, void *);
 
 	Cram_T auth;                    /* authentication context for cram-md5 */
-	u64_t authlog_id;
+	uint64_t authlog_id;
 
-	field_t clientname;             /* resolved client name */
+	Field_T clientname;             /* resolved client name */
 
 	char src_ip[NI_MAXHOST];	/* client IP-number */
 	char src_port[NI_MAXSERV];	/* client port number */
@@ -352,17 +324,17 @@ typedef struct {
 	int service_before_smtp;
 
 	char tls_wbuf[TLS_SEGMENT];	/* buffer to write during tls session */
-	size_t tls_wbuf_n;		/* number of octets to write during tls session */
+	uint64_t tls_wbuf_n;		/* number of octets to write during tls session */
 
-	size_t rbuff_size;              /* size of string-literals */
-	GString *read_buffer;		/* input buffer */
-	size_t read_buffer_offset;	/* input buffer offset */
+	uint64_t rbuff_size;              /* size of string-literals */
+	String_T read_buffer;		/* input buffer */
+	uint64_t read_buffer_offset;	/* input buffer offset */
 
-	GString *write_buffer;		/* output buffer */
-	size_t write_buffer_offset;	/* output buffer offset */
+	String_T write_buffer;		/* output buffer */
+	uint64_t write_buffer_offset;	/* output buffer offset */
 
-	size_t len;			/* crlf decoded octets read by last ci_read(ln) call */
-} clientbase_t;
+	uint64_t len;			/* crlf decoded octets read by last ci_read(ln) call */
+} ClientBase_T;
 
 struct http_sock {
 	char address[128];
@@ -370,8 +342,9 @@ struct http_sock {
 };
 
 typedef struct {
-	clientbase_t *ci;
-	clientstate_t state;			/**< session state */
+	Mempool_T pool;
+	ClientBase_T *ci;
+	ClientState_T state;			/**< session state */
 	void (*handle_input) (void *);
 
 	int error_count;		/**< number of errors that have occured */
@@ -381,25 +354,25 @@ typedef struct {
 	int parser_state;
 	int command_state;
 	int command_type;		/* command type */
-	GList *args;			/* command args (allocated char *) */
+	List_T args;			/* command args (allocated char *) */
 
-	GString *rbuff;			/* input buffer */
+	String_T rbuff;			/* input buffer */
 
 	char *username;
 	char *password;
 	char hostname[64];
 	char *apop_stamp;		/**< timestamp for APOP */
 
-	u64_t useridnr;			/**< Used by timsieved */
-	u64_t totalsize;		/**< total size of messages */
-	u64_t virtual_totalsize;
-	u64_t totalmessages; 		/**< number of messages */
-	u64_t virtual_totalmessages;
+	uint64_t useridnr;			/**< Used by timsieved */
+	uint64_t totalsize;		/**< total size of messages */
+	uint64_t virtual_totalsize;
+	uint64_t totalmessages; 		/**< number of messages */
+	uint64_t virtual_totalmessages;
 
-	GList *messagelst;		/** list of messages */
-	GList *from;			// lmtp senders
-	GList *rcpt;			// lmtp recipients
-} ClientSession_t;
+	List_T messagelst;		/** list of messages */
+	List_T from;			// lmtp senders
+	List_T rcpt;			// lmtp recipients
+} ClientSession_T;
 
 typedef struct {
 	int no_daemonize;
@@ -408,8 +381,8 @@ typedef struct {
 	int timeout;
 	int login_timeout;
 	char **iplist;                  // Allocated memory.
-	field_t port;
-	field_t ssl_port;
+	Field_T port;
+	Field_T ssl_port;
 	int ipcount;
 	int socketcount;
 	int ssl_socketcount;
@@ -421,18 +394,21 @@ typedef struct {
 	int backlog;
 	int resolveIP;
 	struct evhttp *evh;		// http server
-	field_t service_name, process_name;
-	field_t serverUser, serverGroup;
-	field_t socket;
-	field_t log, error_log;
-	field_t pid_dir;
-        field_t tls_cafile;
-        field_t tls_cert;
-        field_t tls_key;
-        field_t tls_ciphers;
+	Field_T service_name;
+        Field_T process_name;
+	Field_T serverUser;
+        Field_T serverGroup;
+	Field_T socket;
+	Field_T log;
+	Field_T error_log;
+	Field_T pid_dir;
+        Field_T tls_cafile;
+        Field_T tls_cert;
+        Field_T tls_key;
+        Field_T tls_ciphers;
 	int (*ClientHandler) (client_sock *);
 	void (*cb) (struct evhttp_request *, void *);
-} serverConfig_t;
+} ServerConfig_T;
 
 
 
@@ -451,7 +427,7 @@ typedef struct {
 /* length of database date string 
    YYYY-MM-DD HH:MM:SS
    1234567890123456789 */
-#define SQL_INTERNALDATE_LEN 19
+#define SQL_INTERNALDATE_LEN 20
 
 /* max length of number/dots part specifier */
 #define IMAP_MAX_PARTSPEC_LEN 100
@@ -486,11 +462,11 @@ typedef enum {
 	SEARCH_SORTED,
 	SEARCH_THREAD_ORDEREDSUBJECT,
 	SEARCH_THREAD_REFERENCES
-} search_order_t;
+} search_order;
 
 typedef struct {
 	int type;
-	u64_t size;
+	uint64_t size;
 	char table[MAX_SEARCH_LEN];
 	char order[MAX_SEARCH_LEN];
 	char field[MAX_SEARCH_LEN];
@@ -502,7 +478,7 @@ typedef struct {
 	gboolean reverse;
 	gboolean searched;
 	gboolean merged;
-} search_key_t;
+} search_key;
 
 
 
@@ -517,12 +493,10 @@ typedef struct {
 	gchar *hdrnames;
 	gchar *hdrplist;
 	GTree *headers;
-} body_fetch_t;
+} body_fetch;
 
 
 typedef struct {
-	GList *bodyfetch;
-
 	gboolean noseen;		/* set the seen flag ? */
 	gboolean msgparse_needed;
 	gboolean hdrparse_needed;
@@ -545,7 +519,9 @@ typedef struct {
 	gboolean getRFC822;
 	gboolean getBodyTotal;
 	gboolean getBodyTotalPeek;
-} fetch_items_t;
+
+	List_T bodyfetch;
+} fetch_items;
 
 /************************************************************************ 
  *                      simple cache mechanism
@@ -556,10 +532,10 @@ typedef struct {
  */
 #define IMAP_NFLAGS 6
 typedef struct { // map dbmail_messages
-	u64_t mailbox_id;
-	u64_t msn;
-	u64_t uid;
-	u64_t rfcsize;
+	uint64_t mailbox_id;
+	uint64_t msn;
+	uint64_t uid;
+	uint64_t rfcsize;
 	char internaldate[IMAP_INTERNALDATE_LEN];
 	int flags[IMAP_NFLAGS];
 	// reference dbmail_keywords
@@ -577,7 +553,7 @@ typedef struct { // map dbmail_messages
 typedef struct {
 	char name[512];
 	int active;
-} sievescript_info_t;
+} sievescript_info;
 /*
  * A struct to say which Sieve allocations
  * will need an associated free.
@@ -589,7 +565,7 @@ typedef struct {
 	int free_error   : 1; // e
 	int free_message : 1; // m
 	int free_action  : 1; // a
-} sievefree_t;
+} sievefree;
 
 
 #define SA_KEEP		1
@@ -602,7 +578,7 @@ typedef struct sort_action {
 	int method;
 	char *destination;
 	char *message;
-} sort_action_t;
+} sort_action;
 
 typedef enum {
 	ACL_RIGHT_LOOKUP, // l
@@ -617,7 +593,7 @@ typedef enum {
 	ACL_RIGHT_EXPUNGE, // e - also set with d
 	ACL_RIGHT_ADMINISTER, // a
 	ACL_RIGHT_NONE
-} ACLRight_t;
+} ACLRight;
 
 struct  ACLMap {
 	int lookup_flag;
@@ -646,8 +622,9 @@ typedef enum {
 	BOX_BRUTEFORCE,  /* Autocreate, no perms checks and skip Sieve scripts. */
 	BOX_COMMANDLINE, /* Autocreate. */
 	BOX_SORTING,     /* Autocreate. */
-	BOX_DEFAULT      /* Autocreate. */
-} mailbox_source_t;
+	BOX_DEFAULT,     /* Autocreate. */
+	BOX_IMAP         /* Autocreate, no subscribe */
+} mailbox_source;
 
 typedef enum {
 	SQL_TO_DATE,
@@ -667,5 +644,5 @@ typedef enum {
 	SQL_TABLE_EXISTS,
 	SQL_ESCAPE_COLUMN,
 	SQL_COMPARE_BLOB
-} sql_fragment_t;
+} sql_fragment;
 #endif

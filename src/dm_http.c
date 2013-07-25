@@ -1,5 +1,5 @@
 /*
- Copyright (C) 2008-2011 NFG Net Facilities Group BV, support@nfg.nl
+ Copyright (C) 2008-2012 NFG Net Facilities Group BV, support@nfg.nl
 
  This program is free software; you can redistribute it and/or 
  modify it under the terms of the GNU General Public License 
@@ -37,7 +37,7 @@ void Http_getUsers(T R)
 {
 	struct evbuffer *buf;
 	char *username = NULL;
-	u64_t id = 0;
+	uint64_t id = 0;
 
 	if (Request_getId(R)) {
 		/* 
@@ -64,7 +64,7 @@ void Http_getUsers(T R)
 		if (username) {
 			MailboxState_T M;
 			const char *mailbox;
-			u64_t mboxid;
+			uint64_t mboxid;
 			/* 
 			 * retrieve user meta-data
 			 * C < /users/testuser1
@@ -101,7 +101,7 @@ void Http_getUsers(T R)
 				}
 
 				/* Check if the user has ACL delete rights to this mailbox */
-				M = MailboxState_new(mboxid);
+				M = MailboxState_new(NULL, mboxid);
 				access = acl_has_right(M, id, ACL_RIGHT_DELETE);
 				if (access != 1) {
 					Request_error(R, HTTP_BADREQUEST, "NO permission denied");
@@ -151,9 +151,9 @@ void Http_getUsers(T R)
 		Request_setContentType(R,"application/json; charset=utf-8");
 		evbuffer_add_printf(buf, "{\"users\": {\n");
 		while(users->data) {
-			u64_t id;
+			uint64_t id;
 			if (auth_user_exists((char *)users->data, &id))
-				evbuffer_add_printf(buf, "    \"%llu\":{\"name\":\"%s\"}", id, (char *)users->data);
+				evbuffer_add_printf(buf, "    \"%" PRIu64 "\":{\"name\":\"%s\"}", id, (char *)users->data);
 			if (! g_list_next(users)) break;
 			users = g_list_next(users);
 			evbuffer_add_printf(buf,",\n");
@@ -181,10 +181,10 @@ void Http_getUsers(T R)
 		Request_setContentType(R,"application/json; charset=utf-8");
 		evbuffer_add_printf(buf, "{\"mailboxes\": {\n");
 		while (mailboxes->data) {
-			MailboxState_T b = MailboxState_new(*((u64_t *)mailboxes->data));
+			MailboxState_T b = MailboxState_new(NULL, *((uint64_t *)mailboxes->data));
 			MailboxState_setOwner(b, id);
 			//if (MailboxState_reload(b) == DM_SUCCESS)
-			evbuffer_add_printf(buf, "    \"%llu\":{\"name\":\"%s\",\"exists\":%u}", MailboxState_getId(b), MailboxState_getName(b), MailboxState_getExists(b));
+			evbuffer_add_printf(buf, "    \"%" PRIu64 "\":{\"name\":\"%s\",\"exists\":%u}", MailboxState_getId(b), MailboxState_getName(b), MailboxState_getExists(b));
 			MailboxState_free(&b);
 			if (! g_list_next(mailboxes)) break;
 			mailboxes = g_list_next(mailboxes);
@@ -210,7 +210,7 @@ void Http_getMailboxes(T R)
 	TRACE(TRACE_DEBUG,"mailbox [%s]", mailbox);
 	char *endptr = NULL;
 	struct evbuffer *buf;
-	u64_t id = 0;
+	uint64_t id = 0;
 
 	if (! mailbox) {
 		Request_error(R, HTTP_SERVUNAVAIL, "Server error");
@@ -222,7 +222,7 @@ void Http_getMailboxes(T R)
 		return;
 	}
 
-	TRACE(TRACE_DEBUG,"mailbox id [%llu]", id);
+	TRACE(TRACE_DEBUG,"mailbox id [%" PRIu64 "]", id);
 	buf = evbuffer_new();
 	Request_setContentType(R,"application/json; charset=utf-8");
 
@@ -239,8 +239,8 @@ void Http_getMailboxes(T R)
 		 */
 
 		const char *msg;
-		u64_t msg_id = 0;
-		MailboxState_T b = MailboxState_new(id);
+		uint64_t msg_id = 0;
+		MailboxState_T b = MailboxState_new(NULL, id);
 		unsigned exists = MailboxState_getExists(b);
 
 		if ((msg = evhttp_find_header(Request_getPOST(R),"message"))) {
@@ -248,7 +248,7 @@ void Http_getMailboxes(T R)
 				exists++;		
 		}
 		evbuffer_add_printf(buf, "{\"mailboxes\": {\n");
-		evbuffer_add_printf(buf, "    \"%llu\":{\"name\":\"%s\",\"exists\":%d}", MailboxState_getId(b), MailboxState_getName(b), exists);
+		evbuffer_add_printf(buf, "    \"%" PRIu64 "\":{\"name\":\"%s\",\"exists\":%d}", MailboxState_getId(b), MailboxState_getName(b), exists);
 		evbuffer_add_printf(buf, "\n}}\n");
 		MailboxState_free(&b);
 
@@ -259,17 +259,17 @@ void Http_getMailboxes(T R)
 		 * C < GET /mailboxes/876/messages
 		 */
 
-		MailboxState_T b = MailboxState_new(id);
+		MailboxState_T b = MailboxState_new(NULL, id);
 		GTree *msns = MailboxState_getMsn(b);
 		GList *ids = g_tree_keys(msns);
 		GTree *msginfo = MailboxState_getMsginfo(b);
 
 		evbuffer_add_printf(buf, "{\"messages\": {\n");
 		while (ids && ids->data) {
-			u64_t *msn = (u64_t *)ids->data;
-			u64_t *uid = (u64_t *)g_tree_lookup(msns, msn);
+			uint64_t *msn = (uint64_t *)ids->data;
+			uint64_t *uid = (uint64_t *)g_tree_lookup(msns, msn);
 			MessageInfo *info = (MessageInfo *)g_tree_lookup(msginfo, uid);
-			evbuffer_add_printf(buf, "    \"%llu\":{\"size\":%llu}", *uid, info->rfcsize);
+			evbuffer_add_printf(buf, "    \"%" PRIu64 "\":{\"size\":%" PRIu64 "}", *uid, info->rfcsize);
 			if (! g_list_next(ids)) break;
 			ids = g_list_next(ids);
 			evbuffer_add_printf(buf,",\n");
@@ -294,10 +294,10 @@ void Http_getMailboxes(T R)
 
 void Http_getMessages(T R)
 {
-	DbmailMessage *m = dbmail_message_new();
+	DbmailMessage *m = dbmail_message_new(NULL);
 	struct evbuffer *buf;
-	u64_t pid;
-	u64_t id = 0;
+	uint64_t pid;
+	uint64_t id = 0;
 
 	if (! Request_getId(R)) return;
 
@@ -312,7 +312,7 @@ void Http_getMessages(T R)
 		return;
 	}
 	buf = evbuffer_new();
-	m = dbmail_message_retrieve(m, pid, DBMAIL_MESSAGE_FILTER_FULL);
+	m = dbmail_message_retrieve(m, pid);
 	if (Request_getMethod(R) == NULL) {
 
 		/*
@@ -320,10 +320,10 @@ void Http_getMessages(T R)
 		 * C < GET /messages/1245911
 		 */
 
-		u64_t size = dbmail_message_get_size(m, TRUE);
+		uint64_t size = dbmail_message_get_size(m, TRUE);
 		Request_setContentType(R,"application/json; charset=utf-8");
 		evbuffer_add_printf(buf, "{\"messages\": {\n");
-		evbuffer_add_printf(buf, "   \"%llu\":{\"size\":%llu}", id, size);
+		evbuffer_add_printf(buf, "   \"%" PRIu64 "\":{\"size\":%" PRIu64 "}", id, size);
 		evbuffer_add_printf(buf, "\n}}\n");
 
 	} else if (MATCH(Request_getMethod(R), "view")) {
@@ -354,13 +354,16 @@ void Http_getMessages(T R)
 				char *hname = headerlist[i];
 				hname[0] = g_ascii_toupper(hname[0]);
 				TRACE(TRACE_DEBUG,"header: [%s]", headerlist[i]);
-				unsigned j = 0;
-				GTuples * headers = dbmail_message_get_header_repeated(m, headerlist[i]);
-				for (j=0; j<headers->len; j++) {
-					evbuffer_add_printf(buf, "%s: %s\n", hname, (char *)g_tuples_index(headers,j,1));
+				GList * headers = dbmail_message_get_header_repeated(m, headerlist[i]);
+
+				while(headers) {
+					evbuffer_add_printf(buf, "%s: %s\n", hname, (char *)headers->data);
+					if (! g_list_next(headers))
+						break;
+					headers = g_list_next(headers);
 				}
-				g_tuples_destroy(headers);
 				i++;
+				g_list_free(g_list_first(headers));
 			}
 		} else {
 

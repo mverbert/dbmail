@@ -1,6 +1,6 @@
 /*
   
- Copyright (c) 2010-2011 NFG Net Facilities Group BV support@nfg.nl
+ Copyright (c) 2010-2012 NFG Net Facilities Group BV support@nfg.nl
 
  This program is free software; you can redistribute it and/or 
  modify it under the terms of the GNU General Public License 
@@ -24,6 +24,7 @@
 #include <glib.h>
 
 #include "dm_sset.h"
+#include "dm_debug.h"
 
 #define THIS_MODULE "SSET"
 
@@ -88,7 +89,7 @@ struct mapper_data {
 	void *data;
 };
 
-static int mapper(void *key, void *value, void *data)
+static int mapper(void *key, void UNUSED *value, void *data)
 {
 	struct mapper_data *m = (struct mapper_data *)data;
 	return m->func(key, m->data)?1:0;

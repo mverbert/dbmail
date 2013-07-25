@@ -33,13 +33,13 @@
 struct sort_context {
 	char *s_buf;
 	char *script;
-	u64_t user_idnr;
+	uint64_t user_idnr;
 	DbmailMessage *message;
 	struct sort_result *result;
 	GList *freelist;
 };
 
-/* Returned opaquely as type sort_result_t. */
+/* Returned opaquely as type SortResult_T. */
 struct sort_result {
 	int cancelkeep;
 	const char *mailbox;
@@ -59,7 +59,7 @@ struct sort_sieve_config {
 
 static void sort_sieve_get_config(struct sort_sieve_config *sieve_config)
 {
-	field_t val;
+	Field_T val;
 
 	assert(sieve_config != NULL);
 
@@ -99,7 +99,7 @@ static int send_vacation(DbmailMessage *message,
 		return 0;
 	}
 
-	DbmailMessage *new_message = dbmail_message_new();
+	DbmailMessage *new_message = dbmail_message_new(message->pool);
 	new_message = dbmail_message_construct(new_message, to, from, subject, body);
 	dbmail_message_set_header(new_message, "X-DBMail-Vacation", handle);
 
@@ -120,28 +120,29 @@ static int send_redirect(DbmailMessage *message, const char *to, const char *fro
 	return send_mail(message, to, from, NULL, SENDRAW, SENDMAIL);
 }
 
-int send_alert(u64_t user_idnr, char *subject, char *body)
+int send_alert(uint64_t user_idnr, char *subject, char *body)
 {
 	DbmailMessage *new_message;
-	field_t postmaster;
+	Field_T postmaster;
 	char *from;
 	int msgflags[IMAP_NFLAGS];
 
 	// Only send each unique alert once a day.
 	char *tmp = g_strconcat(subject, body, NULL);
-	char *handle = dm_md5(tmp);
-	char *userchar = g_strdup_printf("%llu", user_idnr);
+	char *userchar = g_strdup_printf("%" PRIu64 "", user_idnr);
+	char handle[FIELDSIZE];
+
+	memset(handle, 0, sizeof(handle));
+       	dm_md5(tmp, handle);
 	if (db_replycache_validate(userchar, "send_alert", handle, 1) != DM_SUCCESS) {
-		TRACE(TRACE_INFO, "Already sent alert [%s] to user [%llu] today", subject, user_idnr);
+		TRACE(TRACE_INFO, "Already sent alert [%s] to user [%" PRIu64 "] today", subject, user_idnr);
 		g_free(userchar);
-		g_free(handle);
 		g_free(tmp);
 		return 0;
 	} else {
-		TRACE(TRACE_INFO, "Sending alert [%s] to user [%llu]", subject, user_idnr);
+		TRACE(TRACE_INFO, "Sending alert [%s] to user [%" PRIu64 "]", subject, user_idnr);
 		db_replycache_register(userchar, "send_alert", handle);
 		g_free(userchar);
-		g_free(handle);
 		g_free(tmp);
 	}
 
@@ -161,16 +162,16 @@ int send_alert(u64_t user_idnr, char *subject, char *body)
 	// Get the user's login name.
 	char *to = auth_get_userid(user_idnr);
 
-	new_message = dbmail_message_new();
+	new_message = dbmail_message_new(NULL);
 	new_message = dbmail_message_construct(new_message, to, from, subject, body);
 
 	// Pre-insert the message and get a new_message->id
 	dbmail_message_store(new_message);
-	u64_t tmpid = new_message->id;
+	uint64_t tmpid = new_message->id;
 
 	if (sort_deliver_to_mailbox(new_message, user_idnr,
-			"INBOX", BOX_BRUTEFORCE, msgflags) != DSN_CLASS_OK) {
-		TRACE(TRACE_ERR, "Unable to deliver alert [%s] to user [%llu]", subject, user_idnr);
+			"INBOX", BOX_BRUTEFORCE, msgflags, NULL) != DSN_CLASS_OK) {
+		TRACE(TRACE_ERR, "Unable to deliver alert [%s] to user [%" PRIu64 "]", subject, user_idnr);
 	}
 
 	g_free(to);
@@ -201,7 +202,7 @@ int sort_vacation(sieve2_context_t *s, void *my)
 	struct sort_context *m = (struct sort_context *)my;
 	const char *message, *subject, *fromaddr, *handle;
 	const char *rc_to, *rc_from;
-	char *rc_handle;
+	char rc_handle[FIELDSIZE];
 	int days, mime;
 
 	days = sieve2_getvalue_int(s, "days");
@@ -219,7 +220,8 @@ int sort_vacation(sieve2_context_t *s, void *my)
 	if (days < 1) days = 1;
 	if (days > 30) days = 30;
 
-	rc_handle = dm_md5((char * const) handle);
+	memset(rc_handle, 0, sizeof(rc_handle));
+	dm_md5((char * const) handle, rc_handle);
 
 	// FIXME: should be validated as a user might try
 	// to forge an address from their script.
@@ -227,7 +229,7 @@ int sort_vacation(sieve2_context_t *s, void *my)
 	if (!rc_from)
 		rc_from = dbmail_message_get_header(m->message, "Delivered-To");
 	if (!rc_from)
-		rc_from = m->message->envelope_recipient->str;
+		rc_from = p_string_str(m->message->envelope_recipient);
 
 	rc_to = dbmail_message_get_header(m->message, "Reply-To");
 	if (!rc_to)
@@ -242,8 +244,6 @@ int sort_vacation(sieve2_context_t *s, void *my)
 		TRACE(TRACE_INFO, "Vacation suppressed to [%s] from [%s] handle [%s] repeat days [%d]",
 			rc_to, rc_from, rc_handle, days);
 	}
-
-	g_free(rc_handle);
 
 	m->result->cancelkeep = 0;
 	return SIEVE2_OK;
@@ -275,7 +275,7 @@ int sort_notify(sieve2_context_t *s, void *my)
 	if (!rc_from)
 		rc_from = dbmail_message_get_header(m->message, "Delivered-To");
 	if (!rc_from)
-		rc_from = m->message->envelope_recipient->str;
+		rc_from = p_string_str(m->message->envelope_recipient);
 
 	rc_to = dbmail_message_get_header(m->message, "Reply-To");
 	if (!rc_to)
@@ -305,7 +305,7 @@ int sort_redirect(sieve2_context_t *s, void *my)
 	 * recipient changed. As a fallback, we'll use the redirecting user. */
 	from = dbmail_message_get_header(m->message, "Return-Path");
 	if (!from)
-		from = m->message->envelope_recipient->str;
+		from = p_string_str(m->message->envelope_recipient);
 
 	if (send_redirect(m->message, to, from) != 0) {
 		return SIEVE2_ERROR_FAIL;
@@ -346,18 +346,26 @@ int sort_fileinto(sieve2_context_t *s, void *my)
 {
 	struct sort_context *m = (struct sort_context *)my;
 	extern const char * imap_flag_desc[];
-	char * const * flags;
+	char * const * flaglist;
 	const char * mailbox;
 	int msgflags[IMAP_NFLAGS];
 	int *has_msgflags = NULL;
+	GList *keywords = NULL;
+	char *allflags = NULL;
+	char **flags = NULL;
 
 	mailbox = sieve2_getvalue_string(s, "mailbox");
-	flags = sieve2_getvalue_stringlist(s, "flags");
+	flaglist = sieve2_getvalue_stringlist(s, "flags");
+	allflags = g_strjoinv(" ", (char **)flaglist);
+	flags = g_strsplit(allflags, " ", 0);
 
 	/* This condition exists for the KEEP callback. */
 	if (! mailbox) {
 		mailbox = "INBOX";
 	}
+
+	TRACE(TRACE_INFO, "Action is FILEINTO: mailbox is [%s] flags are [%s]",
+			mailbox, allflags);
 
 	/* If there were any imapflags, set them. */
 	if (flags) {
@@ -367,27 +375,45 @@ int sort_fileinto(sieve2_context_t *s, void *my)
 		// Loop through all script/user-specified flags.
 		for (i = 0; flags[i]; i++) {
 			// Find the ones we support.
+			int baseflag = FALSE;
+			char *flag = strrchr(flags[i], '\\');
+			if (flag) 
+				flag++;
+			else
+				flag = flags[i];
+
 			for (j = 0; imap_flag_desc[j] && j < IMAP_NFLAGS; j++) {
-				if (g_strcasestr(imap_flag_desc[j], flags[i])) {
+				if (g_strcasestr(imap_flag_desc[j], flag)) {
+					TRACE(TRACE_DEBUG, "set baseflag [%s]", flag);
 					// Flag 'em.
 					msgflags[j] = 1;
+					baseflag = TRUE;
 					// Only pass msgflags if we found something.
 					has_msgflags = msgflags;
 				}
 			}
-		}
-	}
+			if (! baseflag) {
+				TRACE(TRACE_DEBUG, "set keyword [%s]", flag);
+				keywords = g_list_append(keywords, g_strdup(flag));
+			}
 
-	TRACE(TRACE_INFO, "Action is FILEINTO: mailbox is [%s] flags are [%s]", mailbox, (char *)flags);
+		}
+		g_strfreev(flags);
+	}
+	g_free(allflags);
+
 
 	/* Don't cancel the keep if there's a problem storing the message. */
 	if (sort_deliver_to_mailbox(m->message, m->user_idnr,
-			mailbox, BOX_SORTING, has_msgflags) != DSN_CLASS_OK) {
+			mailbox, BOX_SORTING, has_msgflags, keywords) != DSN_CLASS_OK) {
 		TRACE(TRACE_ERR, "Could not file message into mailbox; not cancelling keep.");
 		m->result->cancelkeep = 0;
 	} else {
 		m->result->cancelkeep = 1;
 	}
+
+	if (keywords)
+		g_list_destroy(keywords);
 
 	return SIEVE2_OK;
 }
@@ -496,17 +522,22 @@ int sort_getheader(sieve2_context_t *s, void *my)
 	struct sort_context *m = (struct sort_context *)my;
 	char *header;
 	char **bodylist;
-	GTuples *headers;
+	GList *headers;
 	unsigned i;
 
 	header = (char *)sieve2_getvalue_string(s, "header");
 	
 	headers = dbmail_message_get_header_repeated(m->message, header);
 	
-	bodylist = g_new0(char *,headers->len+1);
-	for (i=0; i<headers->len; i++)
-		bodylist[i] = (char *)g_tuples_index(headers,i,1);
-	g_tuples_destroy(headers);
+	bodylist = g_new0(char *,g_list_length(headers)+1);
+	i = 0;
+	while (headers) {
+		bodylist[i++] = (char *)headers->data;
+		if (! g_list_next(headers))
+			break;
+		headers = g_list_next(headers);
+	}
+	g_list_free(g_list_first(headers));
 
 	/* We have to free the header array, but not its contents. */
 	m->freelist = g_list_prepend(m->freelist, bodylist);
@@ -809,7 +840,7 @@ const char * sort_listextensions(void)
 }
 
 /* Return 0 on script OK, 1 on script error, 2 on misc error. */
-sort_result_t *sort_validate(u64_t user_idnr, char *scriptname)
+SortResult_T *sort_validate(uint64_t user_idnr, char *scriptname)
 {
 	int res, exitnull = 0;
 	struct sort_result *result = NULL;
@@ -867,7 +898,7 @@ freesieve:
  * such as dbmail-lmtpd, the daemon should
  * finish storing the message and restart.
  * */
-sort_result_t *sort_process(u64_t user_idnr, DbmailMessage *message, const char *mailbox)
+SortResult_T *sort_process(uint64_t user_idnr, DbmailMessage *message, const char *mailbox)
 {
 	int res, exitnull = 0;
 	struct sort_result *result = NULL;
@@ -936,7 +967,7 @@ freesieve:
 
 /* SORT RESULT INTERFACE */
 
-void sort_free_result(sort_result_t *result)
+void sort_free_result(SortResult_T *result)
 {
 	if (result == NULL) return;
 	if (result->errormsg != NULL) 
@@ -946,37 +977,37 @@ void sort_free_result(sort_result_t *result)
 	g_free(result);
 }
 
-int sort_get_cancelkeep(sort_result_t *result)
+int sort_get_cancelkeep(SortResult_T *result)
 {
 	if (result == NULL) return 0;
 	return result->cancelkeep;
 }
 
-const char * sort_get_mailbox(sort_result_t *result)
+const char * sort_get_mailbox(SortResult_T *result)
 {
 	if (result == NULL) return NULL;
 	return result->mailbox;
 }
 
-int sort_get_reject(sort_result_t *result)
+int sort_get_reject(SortResult_T *result)
 {
 	if (result == NULL) return 0;
 	return result->reject;
 }
 
-const char *sort_get_rejectmsg(sort_result_t *result)
+const char *sort_get_rejectmsg(SortResult_T *result)
 {
 	if (result == NULL) return NULL;
 	return result->rejectmsg->str;
 }
 
-int sort_get_error(sort_result_t *result)
+int sort_get_error(SortResult_T *result)
 {
 	if (result == NULL) return 0;
 	return result->errormsg->len;
 }
 
-const char * sort_get_errormsg(sort_result_t *result)
+const char * sort_get_errormsg(SortResult_T *result)
 {
 	if (result == NULL) return NULL;
 	return result->errormsg->str;
