@@ -141,6 +141,9 @@ void client_session_bailout(ClientSession_T **session)
 
 	assert(c);
 
+	while (client_wbuf_len(c->ci) && (! (c->ci->client_state & CLIENT_ERR))) {
+		ci_write_cb(c->ci);
+	}
 	ci_cork(c->ci);
 
 	TRACE(TRACE_DEBUG,"[%p]", c);
@@ -260,9 +263,6 @@ void socket_read_cb(int fd UNUSED, short what UNUSED, void *arg)
 void socket_write_cb(int fd UNUSED, short what UNUSED, void *arg)
 {
 	ClientSession_T *session = (ClientSession_T *)arg;
-
-	if (session->state == CLIENTSTATE_QUIT_QUEUED)
-		return;
 
 	if (! session->ci->cb_write)
 		return;

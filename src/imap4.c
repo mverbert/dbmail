@@ -132,6 +132,7 @@ const IMAP_COMMAND_HANDLER imap_handler_functions[] = {
 static int imap4_tokenizer(ImapSession *, char *);
 static int imap4(ImapSession *);
 static void imap_handle_input(ImapSession *);
+static void imap_handle_abort(ImapSession *);
 
 void imap_cleanup_deferred(gpointer data)
 {
@@ -139,6 +140,12 @@ void imap_cleanup_deferred(gpointer data)
 	dm_thread_data *D = (dm_thread_data *)data;
 	ImapSession *session = (ImapSession *)D->session;
 	ClientBase_T *ci = session->ci;
+
+	if (client_wbuf_len(ci) && (! (ci->client_state & CLIENT_ERR))) {
+		ci_write_cb(ci);
+		dm_queue_push(imap_cleanup_deferred, session, NULL);
+		return;
+	}
 
 	rx = ci->rx;
 	ci_close(ci);
@@ -152,13 +159,12 @@ void imap_cleanup_deferred(gpointer data)
 
 static void imap_session_bailout(ImapSession *session)
 {
-	if (session->state == CLIENTSTATE_QUIT_QUEUED)
-		return;
-
 	TRACE(TRACE_DEBUG,"[%p] state [%d] ci[%p]", session, session->state, session->ci);
-	dbmail_imap_session_set_state(session,CLIENTSTATE_QUIT_QUEUED);
-	assert(session && session->ci);
-	dm_queue_push(imap_cleanup_deferred, session, NULL);
+
+	if (! dbmail_imap_session_set_state(session, CLIENTSTATE_QUIT_QUEUED)) {
+		assert(session && session->ci);
+		dm_queue_push(imap_cleanup_deferred, session, NULL);
+	}
 }
 
 void socket_write_cb(int fd, short what, void *arg)
@@ -181,8 +187,10 @@ void socket_write_cb(int fd, short what, void *arg)
 		case CLIENTSTATE_QUIT_QUEUED:
 			break; // ignore
 		case CLIENTSTATE_LOGOUT:
-		case CLIENTSTATE_ERROR:
 			imap_session_bailout(session);
+			break;
+		case CLIENTSTATE_ERROR:
+			imap_handle_abort(session);
 			break;
 		default:
 			ci_write_cb(session->ci);
@@ -205,8 +213,7 @@ void imap_cb_read(void *arg)
 	TRACE(TRACE_DEBUG,"state [%d] enough %d: %" PRIu64 "/%" PRIu64 "", state, enough, have, need);
 
 	if (state & CLIENT_ERR) {
-		dbmail_imap_session_set_state(session,CLIENTSTATE_ERROR);
-		imap_session_bailout(session);
+		imap_handle_abort(session);
 	} else if (state & CLIENT_EOF) {
 		ci_cork(session->ci);
 		if (enough)
@@ -264,29 +271,29 @@ static void imap_session_reset(ImapSession *session)
  * only the main thread may write to the network event
  * worker threads must use an async queue
  */
-static int64_t imap_session_printf(ImapSession * self, char * message, ...)
+static int64_t imap_session_printf(ImapSession * session, char * message, ...)
 {
         va_list ap, cp;
         uint64_t l;
 	int e = 0;
 
-	p_string_truncate(self->buff, 0);
+	p_string_truncate(session->buff, 0);
 
         assert(message);
         va_start(ap, message);
 	va_copy(cp, ap);
-        p_string_append_vprintf(self->buff, message, cp);
+        p_string_append_vprintf(session->buff, message, cp);
         va_end(cp);
         va_end(ap);
 
-	if ((e = ci_write(self->ci, (char *)p_string_str(self->buff))) < 0) {
+	if ((e = ci_write(session->ci, (char *)p_string_str(session->buff))) < 0) {
 		TRACE(TRACE_DEBUG, "ci_write failed [%s]", strerror(e));
-		dbmail_imap_session_set_state(self,CLIENTSTATE_ERROR);
+		imap_handle_abort(session);
 		return e;
 	}
 
-        l = p_string_len(self->buff);
-	p_string_truncate(self->buff, 0);
+        l = p_string_len(session->buff);
+	p_string_truncate(session->buff, 0);
 
         return (int64_t)l;
 }
@@ -349,7 +356,7 @@ static int checktag(const char *s)
 	return 1;
 }
 
-static void imap_handle_abort(ImapSession *session)
+void imap_handle_abort(ImapSession *session)
 {
 	dbmail_imap_session_set_state(session,CLIENTSTATE_ERROR);	/* fatal error occurred, kick this user */
 	imap_session_reset(session);
@@ -364,16 +371,15 @@ static void imap_handle_continue(ImapSession *session)
 			if ((e = ci_write(session->ci, (char *)p_string_str(session->buff))) < 0) {
 				int serr = errno;
 				TRACE(TRACE_DEBUG,"ci_write returned error [%s]", strerror(serr));
-				dbmail_imap_session_set_state(session,CLIENTSTATE_ERROR);
+				imap_handle_abort(session);
 				return;
 			}
 			dbmail_imap_session_buff_clear(session);
 		}
-		if ((p_string_len(session->ci->write_buffer) - session->ci->write_buffer_offset) > 0) {
+		if (p_string_len(session->ci->write_buffer) > session->ci->write_buffer_offset)
 			ci_write(session->ci, NULL);
-		} else if (session->command_state == TRUE) {
+		if (session->command_state == TRUE)
 			imap_session_reset(session);
-		}
 	} else {
 		dbmail_imap_session_buff_clear(session);
 	}				
@@ -446,7 +452,6 @@ void imap_handle_input(ImapSession *session)
 	if (p_string_len(session->ci->write_buffer)) {
 		TRACE(TRACE_DEBUG,"[%p] write buffer not empty", session);
 		ci_write(session->ci, NULL);
-		return;
 	}
 
 	// nothing left to handle
@@ -484,8 +489,8 @@ void imap_handle_input(ImapSession *session)
 		if (l == 0) break; // done
 
 		if (session->error_count >= MAX_FAULTY_RESPONSES) {
-			dbmail_imap_session_set_state(session,CLIENTSTATE_ERROR);
 			imap_session_printf(session, "* BYE [TRY RFC]\r\n");
+			imap_handle_abort(session);
 			break;
 		}
 
@@ -649,7 +654,7 @@ void _ic_cb_leave(gpointer data)
 			);
 
 	if (state & CLIENT_ERR) {
-		dbmail_imap_session_set_state(session,CLIENTSTATE_ERROR);
+		imap_handle_abort(session);
 		return;
 	} 
 
@@ -699,7 +704,7 @@ int imap4(ImapSession *session)
 	int j = 0;
 	
 	if (! dm_db_ping()) {
-		dbmail_imap_session_set_state(session,CLIENTSTATE_ERROR);
+		imap_handle_abort(session);
 		return DM_EQUERY;
 	}
 
