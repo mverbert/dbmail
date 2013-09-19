@@ -196,6 +196,7 @@ void socket_write_cb(int fd, short what, void *arg)
 			ci_write_cb(session->ci);
 			break;
 	}
+	dm_queue_drain();
 }
 
 void imap_cb_read(void *arg)
@@ -242,6 +243,7 @@ void socket_read_cb(int fd, short what, void *arg)
 	else if (what == EV_TIMEOUT && session->ci->cb_time)
 		session->ci->cb_time(session);
 	
+	dm_queue_drain();
 }
 
 
@@ -358,9 +360,10 @@ static int checktag(const char *s)
 
 void imap_handle_abort(ImapSession *session)
 {
-	dbmail_imap_session_set_state(session,CLIENTSTATE_ERROR);	/* fatal error occurred, kick this user */
-	imap_session_reset(session);
-	imap_session_bailout(session);
+	if (dbmail_imap_session_set_state(session, CLIENTSTATE_ERROR)) {	/* fatal error occurred, kick this user */
+		imap_session_reset(session);
+		imap_session_bailout(session);
+	}
 }
 
 static void imap_handle_continue(ImapSession *session)

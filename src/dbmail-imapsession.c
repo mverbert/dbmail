@@ -56,53 +56,26 @@ extern ServerConfig_T *server_conf;
 /*
  * send_data()
  *
- * sends cnt bytes from a MEM structure to a FILE stream
- * uses a simple buffering system
  */
-#define LOOPMAX 10
-static void send_data(ImapSession *self, GMimeStream *stream, int cnt)
+static void send_data(ImapSession *self, const String_T stream, size_t offset, size_t len)
 {
 	char buf[SEND_BUF_SIZE];
-	ssize_t l;
-	int got = 0, want = cnt;
-	int serr = 0;
-	int loop = LOOPMAX;
+	size_t l = 0;
+	char *head;
 
-	assert(stream);
-	TRACE(TRACE_DEBUG,"[%p] stream [%p] cnt [%d]", self, stream, cnt);
-	while ((cnt >= SEND_BUF_SIZE) && (loop > 0)) {
-		memset(buf,0,sizeof(buf));
-		l = g_mime_stream_read(stream, buf, SEND_BUF_SIZE-1);
-		if (l > 0) {
-			loop = LOOPMAX;
-			dbmail_imap_session_buff_printf(self, "%s", buf);
-			cnt -= l;
-			got += l;
-		}
-		if (l < 0) {
-			serr = errno;
-			TRACE(TRACE_INFO,"failed to read from stream [%s]", strerror(serr));
-			loop--;
-		}
-	}
+	assert(p_string_len(stream) >= (offset+len));
 
-	while ((cnt > 0) && (loop > 0)) {
+	head = (char *)p_string_str(stream)+offset;
+
+	TRACE(TRACE_DEBUG,"[%p] stream [%p] offset [%ld] len [%ld]", self, stream, offset, len);
+	while (len > 0) {
+		l = min(len, sizeof(buf)-1);
 		memset(buf,0,sizeof(buf));
-		l = g_mime_stream_read(stream, buf, cnt);
-		if (l > 0) {
-			loop = LOOPMAX;
-			dbmail_imap_session_buff_printf(self, "%s", buf);
-			cnt -= l;
-			got += l;
-		}
-		if (l < 0) {
-			serr = errno;
-			TRACE(TRACE_INFO,"failed to read from stream [%s]", strerror(serr));
-			loop--;
-		}
+		strncpy(buf, head, l);
+		dbmail_imap_session_buff_printf(self, "%s", buf);
+		head += l;
+		len -= l;
 	}
-	if (got != want) 
-		TRACE(TRACE_WARNING,"[%p] want [%d] <> got [%d]", self, want, got);
 }
 
 static void mailboxstate_destroy(MailboxState_T M)
@@ -408,7 +381,7 @@ static int _imap_session_fetch_parse_partspec(ImapSession *self)
 		shouldclose = 1;
 	} else if (token[j] == '\0') {
 		self->fi->msgparse_needed=1;
-		dbmail_imap_session_bodyfetch_set_itemtype(self, BFIT_TEXT_SILENT);
+		dbmail_imap_session_bodyfetch_set_itemtype(self, BFIT_ALL);
 		shouldclose = 1;
 	} else {
 		return -2;					/* error DONE */
@@ -684,7 +657,6 @@ void _send_headers(ImapSession *self, const body_fetch *bodyfetch, gboolean not)
 static void _fetch_headers(ImapSession *self, body_fetch *bodyfetch, gboolean not)
 {
 	Connection_T c; ResultSet_T r; volatile int t = FALSE;
-	INIT_QUERY;
 	gchar *fld, *val, *old, *new = NULL;
 	uint64_t *mid;
 	uint64_t id;
@@ -692,8 +664,8 @@ static void _fetch_headers(ImapSession *self, body_fetch *bodyfetch, gboolean no
 	GString *fieldorder = NULL;
 	int k;
 	int fieldseq;
-	char range[DEF_FRAGSIZE];
-	memset(range,0,DEF_FRAGSIZE);
+	String_T query = p_string_new(self->pool, "");
+	String_T range = p_string_new(self->pool, "");
 
 	if (! bodyfetch->headers) {
 		TRACE(TRACE_DEBUG, "[%p] init bodyfetch->headers", self);
@@ -737,9 +709,9 @@ static void _fetch_headers(ImapSession *self, body_fetch *bodyfetch, gboolean no
 	self->hi = *(uint64_t *)last->data;
 
 	if (self->msg_idnr == self->hi)
-		snprintf(range,DEF_FRAGSIZE,"= %" PRIu64 "", self->msg_idnr);
+		p_string_printf(range, "= %" PRIu64 "", self->msg_idnr);
 	else
-		snprintf(range,DEF_FRAGSIZE,"BETWEEN %" PRIu64 " AND %" PRIu64 "", self->msg_idnr, self->hi);
+		p_string_printf(range, "BETWEEN %" PRIu64 " AND %" PRIu64 "", self->msg_idnr, self->hi);
 
 	TRACE(TRACE_DEBUG,"[%p] prefetch %" PRIu64 ":%" PRIu64 " ceiling %" PRIu64 " [%s]", self, self->msg_idnr, self->hi, self->ceiling, bodyfetch->hdrplist);
 
@@ -762,7 +734,7 @@ static void _fetch_headers(ImapSession *self, body_fetch *bodyfetch, gboolean no
 		g_string_append_printf(fieldorder, "END AS seq");
 	}
 
-	snprintf(query, DEF_QUERYSIZE, "SELECT m.message_idnr, n.headername, v.headervalue%s "
+	p_string_printf(query, "SELECT m.message_idnr, n.headername, v.headervalue%s "
 			"FROM %sheader h "
 			"LEFT JOIN %smessages m ON h.physmessage_id=m.physmessage_id "
 			"LEFT JOIN %sheadername n ON h.headername_id=n.id "
@@ -773,7 +745,7 @@ static void _fetch_headers(ImapSession *self, body_fetch *bodyfetch, gboolean no
 			"ORDER BY message_idnr, seq",
 			not?"":fieldorder->str,
 			DBPFX, DBPFX, DBPFX, DBPFX,
-			self->mailbox->id, range, 
+			self->mailbox->id, p_string_str(range), 
 			not?"NOT":"", bodyfetch->hdrnames);
 
 	if (fieldorder)
@@ -781,7 +753,7 @@ static void _fetch_headers(ImapSession *self, body_fetch *bodyfetch, gboolean no
 
 	c = db_con_get();	
 	TRY
-		r = db_query(c, query);
+		r = db_query(c, p_string_str(query));
 		while (db_result_next(r)) {
 			int l;	
 			const void *blob;
@@ -815,6 +787,9 @@ static void _fetch_headers(ImapSession *self, body_fetch *bodyfetch, gboolean no
 		db_con_close(c);
 	END_TRY;
 
+	p_string_free(range, TRUE);
+	p_string_free(query, TRUE);
+
 	if (t == DM_EQUERY) return;
 	
 	self->lo += QUERY_BATCHSIZE;
@@ -836,7 +811,7 @@ static uint64_t get_dumpsize(body_fetch *bodyfetch, uint64_t dumpsize)
 
 static void _imap_send_part(ImapSession *self, GMimeObject *part, body_fetch *bodyfetch, const char *type)
 {
-	TRACE(TRACE_DEBUG,"[%p] type [%s]", self, type);
+	TRACE(TRACE_DEBUG,"[%p] type [%s]", self, type?type:"");
 	if ( !part ) { 
 		dbmail_imap_session_buff_printf(self, "] NIL");
 	} else {
@@ -894,12 +869,14 @@ static int _imap_show_body_section(body_fetch *bodyfetch, gpointer data)
 
 	switch (bodyfetch->itemtype) {
 
+		case BFIT_ALL:
+			_imap_send_part(self, part, bodyfetch, NULL);
+			break;
 		case BFIT_TEXT:
 			dbmail_imap_session_buff_printf(self, "TEXT");
-			// fall-through
-		case BFIT_TEXT_SILENT:
 			_imap_send_part(self, part, bodyfetch, "TEXT");
 			break;
+			// fall-through
 		case BFIT_HEADER:
 			dbmail_imap_session_buff_printf(self, "HEADER");
 			_imap_send_part(self, part, bodyfetch, "HEADER");
@@ -932,7 +909,7 @@ static void _fetch_envelopes(ImapSession *self)
 	uint64_t id;
 	char range[DEF_FRAGSIZE];
 	GList *last;
-	memset(range,0,DEF_FRAGSIZE);
+	memset(range,0,sizeof(range));
 
 	if (! self->envelopes) {
 		self->envelopes = g_tree_new_full((GCompareDataFunc)ucmpdata,NULL,(GDestroyNotify)g_free,(GDestroyNotify)g_free);
@@ -952,11 +929,11 @@ static void _fetch_envelopes(ImapSession *self)
 	self->hi = *(uint64_t *)last->data;
 
 	if (self->msg_idnr == self->hi)
-		snprintf(range,DEF_FRAGSIZE,"= %" PRIu64 "", self->msg_idnr);
+		snprintf(range,DEF_FRAGSIZE-1,"= %" PRIu64 "", self->msg_idnr);
 	else
-		snprintf(range,DEF_FRAGSIZE,"BETWEEN %" PRIu64 " AND %" PRIu64 "", self->msg_idnr, self->hi);
+		snprintf(range,DEF_FRAGSIZE-1,"BETWEEN %" PRIu64 " AND %" PRIu64 "", self->msg_idnr, self->hi);
 
-	snprintf(query, DEF_QUERYSIZE, "SELECT message_idnr,envelope "
+	snprintf(query, DEF_QUERYSIZE-1, "SELECT message_idnr,envelope "
 			"FROM %senvelope e "
 			"LEFT JOIN %smessages m USING (physmessage_id) "
 			"WHERE m.mailbox_idnr = %" PRIu64 " "
@@ -1010,11 +987,11 @@ static void _imap_show_body_sections(ImapSession *self)
 static int _fetch_get_items(ImapSession *self, uint64_t *uid)
 {
 	int result;
-	uint64_t size;
+	uint64_t size = 0;
 	gchar *s = NULL;
 	uint64_t *id = uid;
 	gboolean reportflags = FALSE;
-	GMimeStream *stream = NULL;
+	String_T stream = NULL;
 
 	MessageInfo *msginfo = g_tree_lookup(MailboxState_getMsginfo(self->mailbox->mbstate), uid);
 
@@ -1035,9 +1012,8 @@ static int _fetch_get_items(ImapSession *self, uint64_t *uid)
 		if (! (dbmail_imap_session_message_load(self)))
 			return 0;
 
-		stream = self->message->stream;
-		g_mime_stream_reset(stream);
-		size = g_mime_stream_length(stream);
+		stream = self->message->crlf;
+		size = p_string_len(stream);
 	}
 
 	dbmail_imap_session_buff_printf(self, "* %" PRIu64 " FETCH (", *id);
@@ -1096,8 +1072,7 @@ static int _fetch_get_items(ImapSession *self, uint64_t *uid)
 	if (self->fi->getRFC822 || self->fi->getRFC822Peek) {
 		SEND_SPACE;
 		dbmail_imap_session_buff_printf(self, "RFC822 {%" PRIu64 "}\r\n", size);
-		g_mime_stream_reset(stream);
-		send_data(self, stream, size);
+		send_data(self, stream, 0, size);
 		if (self->fi->getRFC822)
 			self->fi->setseen = 1;
 
@@ -1107,20 +1082,14 @@ static int _fetch_get_items(ImapSession *self, uint64_t *uid)
 		SEND_SPACE;
 		if (dbmail_imap_session_bodyfetch_get_last_octetcnt(self) == 0) {
 			dbmail_imap_session_buff_printf(self, "BODY[] {%" PRIu64 "}\r\n", size);
-			g_mime_stream_reset(stream);
-			send_data(self, stream, size);
+			send_data(self, stream, 0, size);
 		} else {
-			g_mime_stream_seek(stream,
-					dbmail_imap_session_bodyfetch_get_last_octetstart(self),
-					GMIME_STREAM_SEEK_SET);
-			size = (dbmail_imap_session_bodyfetch_get_last_octetcnt(self) >
-			     (((long long)size) - dbmail_imap_session_bodyfetch_get_last_octetstart(self)))
-			    ? (((long long)size) - dbmail_imap_session_bodyfetch_get_last_octetstart(self)) 
-			    : dbmail_imap_session_bodyfetch_get_last_octetcnt(self);
-
+			uint64_t start = dbmail_imap_session_bodyfetch_get_last_octetstart(self);
+			uint64_t count = dbmail_imap_session_bodyfetch_get_last_octetcnt(self);
+			count = ((start + count) > size)?(size - start):count;
 			dbmail_imap_session_buff_printf(self, "BODY[]<%" PRIu64 "> {%" PRIu64 "}\r\n", 
-					dbmail_imap_session_bodyfetch_get_last_octetstart(self), size);
-			send_data(self, stream, size);
+					start, count);
+			send_data(self, stream, start, count);
 		}
 		if (self->fi->getBodyTotal)
 			self->fi->setseen = 1;
@@ -1637,8 +1606,13 @@ MailboxState_T dbmail_imap_session_mbxinfo_lookup(ImapSession *self, uint64_t ma
 
 int dbmail_imap_session_set_state(ImapSession *self, ClientState_T state)
 {
-	TRACE(TRACE_DEBUG,"state [%d]", state);
-	if (self->state == state)
+	ClientState_T current;
+
+	SESSION_LOCK(self->lock);
+	current = self->state;
+	SESSION_UNLOCK(self->lock);
+
+	if ((current == state) || (current == CLIENTSTATE_QUIT_QUEUED))
 		return 1;
 
 	switch (state) {
@@ -1666,7 +1640,8 @@ int dbmail_imap_session_set_state(ImapSession *self, ClientState_T state)
 			break;
 	}
 
-	TRACE(TRACE_DEBUG,"[%p] state [%d]->[%d]", self, self->state, state);
+	TRACE(TRACE_DEBUG,"[%p] state [%d]->[%d]", self, current, state);
+
 	SESSION_LOCK(self->lock);
 	self->state = state;
 	SESSION_UNLOCK(self->lock);

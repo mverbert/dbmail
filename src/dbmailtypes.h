@@ -44,7 +44,7 @@
 
 #define MAXSOCKETS 256
 
-#define UID_SIZE 70
+#define UID_SIZE 96
 #define IPNUM_LEN 32
 #define IPLEN 32
 #define BACKLOG 128
@@ -150,6 +150,7 @@ typedef struct {
 	enum DBMAIL_MESSAGE_CLASS klass;
 	GMimeObject *content;
 	GMimeStream *stream;
+	String_T crlf; 
 
 	// Mappings
 	GHashTable *header_dict;
@@ -264,7 +265,7 @@ enum BODY_FETCH_ITEM_TYPES {
 	BFIT_MIME               = 3,
 	BFIT_HEADER_FIELDS      = 4,
 	BFIT_HEADER_FIELDS_NOT  = 5, 
-	BFIT_TEXT_SILENT        = 6
+	BFIT_ALL                = 6
 };
 
 

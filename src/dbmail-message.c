@@ -147,7 +147,7 @@ static uint64_t blob_exists(const char *buf, const char *hash)
 				db_commit_transaction(c);
 			}
 		} else {
-			snprintf(blob_cmp, DEF_FRAGSIZE, db_get_sql(SQL_COMPARE_BLOB), "data");
+			snprintf(blob_cmp, DEF_FRAGSIZE-1, db_get_sql(SQL_COMPARE_BLOB), "data");
 			s = db_stmt_prepare(c,"SELECT id FROM %smimeparts WHERE hash=? AND %ssize%s=? AND %s", 
 					DBPFX,db_get_sql(SQL_ESCAPE_COLUMN), db_get_sql(SQL_ESCAPE_COLUMN),
 					blob_cmp);
@@ -278,9 +278,8 @@ static int store_blob(DbmailMessage *m, const char *buf, gboolean is_header)
 
 }
 
-static GMimeContentType *find_type(const char *s)
+static char *find_type_header(const char *s)
 {
-	GMimeContentType *type = NULL;
 	GString *header;
 	char *rest, *h = NULL;
 	int i=0;
@@ -308,24 +307,58 @@ static GMimeContentType *find_type(const char *s)
 		g_string_append_c(header,rest[i++]);
 	}
 	h = header->str;
+	g_string_free(header,FALSE);
 	g_strstrip(h);
-	if (strlen(h))
-		type = g_mime_content_type_new_from_string(h);
-	g_string_free(header,TRUE);
+	return h;
+}
+
+static GMimeContentType *find_type(const char *s)
+{
+	GMimeContentType *type = NULL;
+	char *header = find_type_header(s);
+	if (! header)
+		return NULL;
+	type = g_mime_content_type_new_from_string(header);
+	g_free(header);
 	return type;
 }
 
-static char * find_boundary(const char *s)
-{
-	gchar *boundary;
-	GMimeContentType *type = find_type(s);
-	if (! type)
-		return NULL;
-	boundary = g_strdup(g_mime_content_type_get_parameter(type,"boundary"));
-	g_object_unref(type);
-	return boundary;
-}
+#define MAX_MIME_DEPTH 64
+#define MAX_MIME_BLEN 128
 
+static bool find_boundary(const char *s, char *boundary)
+{
+	int i = 0;
+	char *rest = NULL;
+	bool wantquote = false;
+	char *type = find_type_header(s);
+
+	memset(boundary, 0, MAX_MIME_BLEN);
+	if (! type)
+		return false;
+	rest = g_strcasestr(type, "boundary=");
+	if (! rest) {
+		g_free(type);
+		return false;
+	}
+	rest += 9; // jump past 'boundary='
+	if (rest[0] == '"') {
+		wantquote=true;
+		rest++;
+	}
+	while (rest[i]) {
+		if (wantquote && rest[i]=='"') {
+			break;
+		}
+		if (! wantquote && (isspace(rest[i]) || rest[i]==';'))
+			break;
+		i++;
+	}
+		
+	strncpy(boundary, rest, min(i, MAX_MIME_BLEN-1));
+	g_free(type);
+	return true;
+}
 
 static DbmailMessage * _mime_retrieve(DbmailMessage *self)
 {
@@ -333,10 +366,7 @@ static DbmailMessage * _mime_retrieve(DbmailMessage *self)
 	Connection_T c;
        	ResultSet_T r;
 	char internal_date[SQL_INTERNALDATE_LEN];
-	char *boundary = NULL;
 	GMimeContentType *mimetype = NULL;
-	int maxdepth = 128;
-	volatile char **blist = g_new0(volatile char *, maxdepth);
 	int prevdepth, depth = 0, order, row = 0, key = 1;
 	volatile int t = FALSE;
 	gboolean got_boundary = FALSE, prev_boundary = FALSE, is_header = TRUE, prev_header, finalized=FALSE;
@@ -352,6 +382,12 @@ static DbmailMessage * _mime_retrieve(DbmailMessage *self)
 
 	c = db_con_get();
 	TRY
+		char boundary[MAX_MIME_BLEN];
+		char blist[MAX_MIME_DEPTH][MAX_MIME_BLEN];
+
+		memset(&boundary, 0, sizeof(boundary));
+		memset(&blist, 0, sizeof(blist));
+
 		stmt = db_stmt_prepare(c,
 			       	"SELECT l.part_key,l.part_depth,l.part_order,l.is_header,%s,%s "
 				"FROM %smimeparts p "
@@ -372,18 +408,11 @@ static DbmailMessage * _mime_retrieve(DbmailMessage *self)
 			prev_header	= is_header;
 			key		= db_result_get_int(r,0);
 			depth		= db_result_get_int(r,1);
-			while (maxdepth < (depth + 1)) {
-				int newmaxdepth = 2 * depth;
-				blist = g_renew(volatile char *, blist, newmaxdepth);
-				while (maxdepth < newmaxdepth)
-					blist[maxdepth++] = NULL;
-			}
-
 			order		= db_result_get_int(r,2);
 			is_header	= db_result_get_bool(r,3);
 			if (row == 0) {
 				memset(internal_date, 0, sizeof(internal_date));
-				g_strlcpy(internal_date, db_result_get(r,4), SQL_INTERNALDATE_LEN);
+				g_strlcpy(internal_date, db_result_get(r,4), SQL_INTERNALDATE_LEN-1);
 			}
 			blob		= db_result_get_blob(r,5,&l);
 
@@ -398,23 +427,22 @@ static DbmailMessage * _mime_retrieve(DbmailMessage *self)
 
 			got_boundary = FALSE;
 
-			if (is_header && ((boundary = find_boundary((char *)blob)) != NULL)) {
+			if (is_header && find_boundary((char *)blob, boundary)) {
 				got_boundary = TRUE;
 				dprint("<boundary depth=\"%d\">%s</boundary>\n", depth, boundary);
-				if (blist[depth]) g_free((void *)blist[depth]);
-				blist[depth] = boundary;
+				strncpy(blist[depth], boundary, MAX_MIME_BLEN-1);
 			}
 
-			if (prevdepth > depth && blist[depth]) {
-				dprint("\n--%s at %d--\n", blist[depth], depth);
-				p_string_append_printf(m, "\n--%s--\n", blist[depth]);
-				g_free((void *)blist[depth]);
-				blist[depth] = NULL;
+			while (prevdepth-1 >= depth && blist[prevdepth-1][0]) {
+				dprint("\n--%s at %d -> %d--\n", blist[prevdepth-1], prevdepth, prevdepth-1);
+				p_string_append_printf(m, "\n--%s--\n", blist[prevdepth-1]);
+				memset(blist[prevdepth-1], 0, MAX_MIME_BLEN);
+				prevdepth--;
 				finalized=TRUE;
 			}
 
-			if (depth>0 && blist[depth-1])
-				boundary = (char *)blist[depth-1];
+			if ((depth > 0) && (blist[depth-1][0]))
+				strncpy(boundary, blist[depth-1], MAX_MIME_BLEN-1);
 
 			if (is_header && (!prev_header || prev_boundary || (prev_header && depth>0 && !prev_is_message))) {
 				dprint("\n--%s\n", boundary);
@@ -430,6 +458,14 @@ static DbmailMessage * _mime_retrieve(DbmailMessage *self)
 			
 			row++;
 		}
+
+		if (row > 2 && boundary[0] && !finalized) {
+			dprint("\n--%s-- final\n", boundary);
+			p_string_append_printf(m, "\n--%s--\n", boundary);
+			finalized=1;
+		}
+
+
 	CATCH(SQLException)
 		LOG_SQLERROR;
 		t = DM_EQUERY;
@@ -443,29 +479,10 @@ static DbmailMessage * _mime_retrieve(DbmailMessage *self)
 		return NULL;
 	}
 
-	if (row > 2 && boundary && !finalized) {
-		dprint("\n--%s-- final\n", boundary);
-		p_string_append_printf(m, "\n--%s--\n", boundary);
-		finalized=1;
-	}
-
-	if (row > 2 && depth > 0 && boundary && blist[0] && !finalized) {
-		if (strcmp((const char *)blist[0],boundary)!=0) {
-			dprint("\n--%s-- final\n", blist[0]);
-			p_string_append_printf(m, "\n--%s--\n\n", blist[0]);
-		} else
-			p_string_append_printf(m, "\n");
-	}
-	
 	self = dbmail_message_init_with_string(self,p_string_str(m));
 	dbmail_message_set_internal_date(self, internal_date);
 	p_string_free(m,TRUE);
 	p_string_free(n,TRUE);
-	while (--maxdepth >= 0) {
-		if (blist[maxdepth])
-			g_free((void *)blist[maxdepth]);
-	}
-	g_free(blist);
 	return self;
 }
 
@@ -682,6 +699,10 @@ void dbmail_message_free(DbmailMessage *self)
 		g_object_unref(self->stream);
 		self->stream = NULL;
 	}
+	if (self->crlf) {
+		p_string_free(self->crlf, TRUE);
+		self->crlf = NULL;
+	}
 
 	p_string_free(self->envelope_recipient,TRUE);
 	g_hash_table_destroy(self->header_dict);
@@ -733,6 +754,7 @@ int dbmail_message_get_class(const DbmailMessage *self)
  */
 DbmailMessage * dbmail_message_init_with_string(DbmailMessage *self, const char *str)
 {
+	char *buf, *crlf;
 	GMimeObject *content;
 	GMimeParser *parser;
 #define FROMLINE 80
@@ -772,6 +794,12 @@ DbmailMessage * dbmail_message_init_with_string(DbmailMessage *self, const char 
 			self->content = content;
 		}
 	}
+
+	buf = dbmail_message_to_string(self);
+	crlf = get_crlf_encoded(buf);
+	self->crlf = p_string_new(self->pool, crlf);
+	g_free(crlf);
+	g_free(buf);
 
 	return self;
 }
@@ -949,34 +977,7 @@ gchar * dbmail_message_hdrs_to_string(const DbmailMessage *self)
 
 size_t dbmail_message_get_size(const DbmailMessage *self, gboolean crlf)
 {
-	size_t r;
-
-	r = g_mime_stream_length(self->stream);
-
-        if (crlf) {
-		int i = 0, j = 0;
-		char curr = 0, prev = 0;
-
-		char buf[FIELDSIZE];
-		memset(buf, 0, sizeof(buf));
-
-		g_mime_stream_reset(self->stream);
-		j = g_mime_stream_read(self->stream, buf, FIELDSIZE-1);
-
-		while (j>0) {
-			for (i=0; i<j; i++) {
-				curr = buf[i];
-				if (ISLF(curr) && (! ISCR(prev)))
-					r++;
-				prev = curr;
-			}
-
-			memset(buf, 0, sizeof(buf));
-			j = g_mime_stream_read(self->stream, buf, FIELDSIZE-1);
-		}
-	}
-
-	return r;
+        return crlf ? (size_t)p_string_len(self->crlf):(size_t)g_mime_stream_length(self->stream);
 }
 
 static DbmailMessage * _retrieve(DbmailMessage *self, const char *query_template)
@@ -1006,7 +1007,7 @@ static DbmailMessage * _retrieve(DbmailMessage *self, const char *query_template
 	self = store;
 
 	date2char_str("p.internal_date", &frag);
-	snprintf(query, DEF_QUERYSIZE, query_template, frag, DBPFX, DBPFX, dbmail_message_get_physid(self));
+	snprintf(query, DEF_QUERYSIZE-1, query_template, frag, DBPFX, DBPFX, dbmail_message_get_physid(self));
 
 	c = db_con_get();
 	if (! (r = db_query(c, query))) {
@@ -1438,7 +1439,7 @@ static uint64_t _header_value_exists(Connection_T c, const char *value, const ch
 		return 0;
 	}
 	db_con_clear(c);
-	snprintf(blob_cmp, DEF_FRAGSIZE, db_get_sql(SQL_COMPARE_BLOB), "headervalue");
+	snprintf(blob_cmp, DEF_FRAGSIZE-1, db_get_sql(SQL_COMPARE_BLOB), "headervalue");
 
 	s = db_stmt_prepare(c, "SELECT id FROM %sheadervalue WHERE hash=? AND %s", DBPFX, blob_cmp);
 	db_stmt_set_str(s, 1, hash);
@@ -1559,7 +1560,14 @@ static GString * _header_addresses(InternetAddressList *ialist)
 			if (j>0) g_string_append(store, " ");
 
 			GString *group;
-			g_string_append_printf(store, "%s:", internet_address_get_name(ia));
+			const char *name;
+		       	if ((name = internet_address_get_name(ia))) {
+				if (strchr(name, ',')) {
+					g_string_append_printf(store, "\"%s\":", internet_address_get_name(ia));
+				} else {
+					g_string_append_printf(store, "%s:", internet_address_get_name(ia));
+				}
+			}
 			group = _header_addresses(internet_address_group_get_members((InternetAddressGroup *)ia));
 			if (group->len > 0)
 				g_string_append_printf(store, " %s", group->str);
@@ -1573,8 +1581,13 @@ static GString * _header_addresses(InternetAddressList *ialist)
 			const char *name = internet_address_get_name(ia);
 			const char *addr = internet_address_mailbox_get_addr((InternetAddressMailbox *)ia);
 
-			if (name)
-				g_string_append_printf(store, "%s ", name);
+			if (name) {
+				if (strchr(name, ',')) {
+					g_string_append_printf(store, "\"%s\" ", name);
+				} else {
+					g_string_append_printf(store, "%s ", name);
+				}
+			}
 			if (addr)
 				g_string_append_printf(store, "%s%s%s", 
 						name?"<":"", 
@@ -1683,7 +1696,7 @@ static void _header_cache(const char *header, const char *raw, gpointer user_dat
 	if(isdate) {
 		int offset;
 		date = g_mime_utils_header_decode_date(value,&offset);
-		strftime(sortfield, CACHE_WIDTH, "%Y-%m-%d %H:%M:%S", gmtime(&date));
+		strftime(sortfield, CACHE_WIDTH-1, "%Y-%m-%d %H:%M:%S", gmtime(&date));
 
 		date += (offset * 36); // +0200 -> offset 200
 		strftime(datefield, sizeof(datefield)-1, "%Y-%m-%d", gmtime(&date));
@@ -1971,6 +1984,7 @@ dsn_class_t sort_and_deliver(DbmailMessage *message,
 	dsn_class_t ret;
 	Field_T val;
 	char *subaddress = NULL;
+	char into[1024];
 
 	/* Catch the brute force delivery right away.
 	 * We skip the Sieve scripts, and down the call
@@ -1983,11 +1997,9 @@ dsn_class_t sort_and_deliver(DbmailMessage *message,
 
 	/* This is the only condition when called from pipe.c, actually. */
 	if (! mailbox) {
-		char into[1024];
-		
 		memset(into,0,sizeof(into));
 
-		if (! (get_mailbox_from_filters(message, useridnr, mailbox, into, sizeof(into)))) {				
+		if (! (get_mailbox_from_filters(message, useridnr, mailbox, into, sizeof(into)-1))) {				
 			mailbox = "INBOX";
 			source = BOX_DEFAULT;
 		} else {
