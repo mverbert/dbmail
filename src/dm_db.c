@@ -224,7 +224,6 @@ int db_connect(void)
 		ConnectionPool_getInitialConnections(pool), ConnectionPool_getMaxConnections(pool));
 
 	if (! (c = ConnectionPool_getConnection(pool))) {
-		db_con_close(c);
 		TRACE(TRACE_EMERG, "error getting a database connection from the pool");
 		return -1;
 	}
@@ -1344,6 +1343,7 @@ int db_icheck_physmessages(gboolean cleanup)
 			*id = db_result_get_u64(r, 0);
 			ids = g_list_prepend(ids, id);
 		}
+		t = g_list_length(ids);
 		if (cleanup) {
 			while(ids) {
 				db_begin_transaction(c);
@@ -1353,7 +1353,6 @@ int db_icheck_physmessages(gboolean cleanup)
 				ids = g_list_next(ids);
 			}
 		}
-		t = g_list_length(ids);
 		g_list_destroy(ids);
 	CATCH(SQLException)
 		LOG_SQLERROR;
@@ -1381,6 +1380,7 @@ int db_icheck_partlists(gboolean cleanup)
 			*id = db_result_get_u64(r, 0);
 			ids = g_list_prepend(ids, id);
 		}
+		t = g_list_length(ids);
 		if (cleanup) {
 			while(ids) {
 				db_begin_transaction(c);
@@ -1390,7 +1390,6 @@ int db_icheck_partlists(gboolean cleanup)
 				ids = g_list_next(ids);
 			}
 		}
-		t = g_list_length(ids);
 		g_list_destroy(ids);
 	CATCH(SQLException)
 		LOG_SQLERROR;
@@ -1417,6 +1416,7 @@ int db_icheck_mimeparts(gboolean cleanup)
 			*id = db_result_get_u64(r, 0);
 			ids = g_list_prepend(ids, id);
 		}
+		t = g_list_length(ids);
 		if (cleanup) {
 			while(ids) {
 				db_begin_transaction(c);
@@ -1426,7 +1426,78 @@ int db_icheck_mimeparts(gboolean cleanup)
 				ids = g_list_next(ids);
 			}
 		}
+		g_list_destroy(ids);
+	CATCH(SQLException)
+		LOG_SQLERROR;
+		db_rollback_transaction(c);
+		t = DM_EQUERY;
+	FINALLY
+		db_con_close(c);
+	END_TRY;
+
+	return t;
+}
+
+int db_icheck_headernames(gboolean cleanup)
+{
+	Connection_T c; ResultSet_T r; volatile int t = DM_SUCCESS;
+	GList *ids = NULL;
+
+	c = db_con_get();
+	TRY
+		r = db_query(c, "SELECT hn.id FROM %sheadername hn LEFT JOIN %sheader h ON hn.id = h.headername_id "
+				"WHERE h.headername_id IS NULL", DBPFX, DBPFX);
+		while(db_result_next(r)) {
+			uint64_t *id = g_new0(uint64_t, 1);
+			*id = db_result_get_u64(r, 0);
+			ids = g_list_prepend(ids, id);
+		}
 		t = g_list_length(ids);
+		if (cleanup) {
+			while(ids) {
+				db_begin_transaction(c);
+				db_exec(c, "DELETE FROM %sheadername WHERE id = %" PRIu64 "", DBPFX, *(uint64_t *)ids->data);
+				db_commit_transaction(c);
+				if (! g_list_next(ids)) break;
+				ids = g_list_next(ids);
+			}
+		}
+		g_list_destroy(ids);
+	CATCH(SQLException)
+		LOG_SQLERROR;
+		db_rollback_transaction(c);
+		t = DM_EQUERY;
+	FINALLY
+		db_con_close(c);
+	END_TRY;
+
+	return t;
+}
+
+int db_icheck_headervalues(gboolean cleanup)
+{
+	Connection_T c; ResultSet_T r; volatile int t = DM_SUCCESS;
+	GList *ids = NULL;
+
+	c = db_con_get();
+	TRY
+		r = db_query(c, "SELECT hv.id FROM %sheadervalue hv LEFT JOIN %sheader h ON hv.id = h.headervalue_id "
+				"WHERE h.headervalue_id IS NULL", DBPFX, DBPFX);
+		while(db_result_next(r)) {
+			uint64_t *id = g_new0(uint64_t, 1);
+			*id = db_result_get_u64(r, 0);
+			ids = g_list_prepend(ids, id);
+		}
+		t = g_list_length(ids);
+		if (cleanup) {
+			while(ids) {
+				db_begin_transaction(c);
+				db_exec(c, "DELETE FROM %sheadervalue WHERE id = %" PRIu64 "", DBPFX, *(uint64_t *)ids->data);
+				db_commit_transaction(c);
+				if (! g_list_next(ids)) break;
+				ids = g_list_next(ids);
+			}
+		}
 		g_list_destroy(ids);
 	CATCH(SQLException)
 		LOG_SQLERROR;
@@ -1739,9 +1810,10 @@ int db_delete_mailbox(uint64_t mailbox_idnr, int only_empty, int update_curmail_
 char * db_get_message_lines(uint64_t message_idnr, long lines)
 {
 	DbmailMessage *msg;
+	String_T stream = NULL;
 	char *raw, *out;
+	unsigned pos = 0;
 	uint64_t physmessage_id = 0;
-	size_t size = 0, read = 0;
 	
 	TRACE(TRACE_DEBUG, "request for [%ld] lines", lines);
 
@@ -1751,27 +1823,27 @@ char * db_get_message_lines(uint64_t message_idnr, long lines)
 
 	msg = dbmail_message_new(NULL);
 	msg = dbmail_message_retrieve(msg, physmessage_id);
-	g_mime_stream_reset(msg->stream);
-	size = g_mime_stream_length(msg->stream);
-	raw = g_new0(char, size+1);
-	if ((read = g_mime_stream_read(msg->stream, raw, size)) < size) {
-		TRACE(TRACE_INFO, "error reading from stream [%lu/%lu]", read, size);
-	}
-	dbmail_message_free(msg);
+	stream = msg->crlf;
 
 	if (lines >=0) {
 		unsigned n = 0;
-		unsigned pos = 0;
+		raw = (char *)p_string_str(stream);
 		pos = find_end_of_header(raw);
 		while (raw[pos] && n < lines) {
 			if (raw[pos] == '\n')
 				n++;
 			pos++;
 		}
-		raw[pos] = '\0';
 	}
-	out = get_crlf_encoded_dots(raw);
-	g_free(raw);
+
+	if (pos > 0) {
+		raw = g_strndup(p_string_str(stream), pos);
+		out = get_crlf_encoded_dots(raw);
+		g_free(raw);
+	} else {
+		out = get_crlf_encoded_dots(p_string_str(stream));
+	}
+	dbmail_message_free(msg);
 	return out;
 }
 
@@ -3257,14 +3329,14 @@ int db_usermap_resolve(ClientBase_T *ci, const char *username, char *real_userna
 
 	if ((strncmp(login,"ANY",3)==0)) {
 		if (dm_valid_format(userid)==0)
-			snprintf(real_username,DM_USERNAME_LEN,userid,username);
+			snprintf(real_username,DM_USERNAME_LEN-1,userid,username);
 		else {
 			if (bestlogin) g_free(bestlogin);
 			if (bestuserid) g_free(bestuserid);
 			return DM_EQUERY;
 		}
 	} else {
-		strncpy(real_username, userid, DM_USERNAME_LEN);
+		strncpy(real_username, userid, DM_USERNAME_LEN-1);
 	}
 	
 	TRACE(TRACE_DEBUG,"[%s] maps to [%s]", username, real_username);

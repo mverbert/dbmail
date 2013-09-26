@@ -135,7 +135,7 @@ static uint64_t blob_exists(const char *buf, const char *hash)
 			s = db_stmt_prepare(c, "SELECT a.id, b.id FROM dbmail_mimeparts a INNER JOIN " 
 					"%smimeparts b ON a.hash=b.hash AND DBMS_LOB.COMPARE(a.data, b.data) = 0 " 
 					" AND a.id<>b.id AND b.id=?", DBPFX);
-			db_stmt_set_u64(s,1,l);
+			db_stmt_set_u64(s, 1, id);
 			r = db_stmt_query(s);
 			if (db_result_next(r))
 				id_old = db_result_get_u64(r,0);			
@@ -474,8 +474,8 @@ static DbmailMessage * _mime_retrieve(DbmailMessage *self)
 	END_TRY;
 
 	if ((row == 0) || (t == DM_EQUERY)) {
-		if (m)
-			p_string_free(m,TRUE);
+		if (m) p_string_free(m,TRUE);
+		if (n) p_string_free(n,TRUE);
 		return NULL;
 	}
 
@@ -2355,6 +2355,9 @@ static int send_reply(DbmailMessage *message, const char *body, GList *aliases)
 	const char *from, *to, *subject;
 	const char *x_dbmail_reply;
 	const char *precedence;
+	char *usubject;
+	char *newsubject;
+	char *unewsubject;
 	char handle[FIELDSIZE];
 	int result;
 
@@ -2402,7 +2405,11 @@ static int send_reply(DbmailMessage *message, const char *body, GList *aliases)
 		return 0;
 	}
 
-	char *newsubject = g_strconcat("Re: ", subject, NULL);
+	usubject = dbmail_iconv_decode_text(subject);
+       	unewsubject = g_strconcat("Re: ", usubject, NULL);
+	newsubject = g_mime_utils_header_encode_text(unewsubject);
+	g_free(usubject);
+	g_free(unewsubject);
 
 	DbmailMessage *new_message = dbmail_message_new(message->pool);
 	new_message = dbmail_message_construct(new_message, to, from, newsubject, body);
