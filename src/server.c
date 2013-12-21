@@ -60,6 +60,11 @@ FILE *fstdout = NULL;
 FILE *fstderr = NULL;
 FILE *fnull = NULL;
 
+/* self-pipe
+ */
+int selfpipe[2];
+pthread_mutex_t selfpipe_lock;
+
 /* 
  *
  * threaded command primitives 
@@ -69,24 +74,30 @@ FILE *fnull = NULL;
  *
  */
 
-
-/*
- * async queue drainage callback for the main thread
- */
-struct timeval heartbeat_interval = {0,200000};
-
-static void cb_queue_drain(int fd UNUSED, short what UNUSED, void *arg UNUSED)
+static void cb_queue_drain(int fd, short what UNUSED, void *arg UNUSED)
 {
+	char buf[1024];
 	event_del(heartbeat);
 	dm_queue_drain();
-	event_add(heartbeat, &heartbeat_interval);
+	PLOCK(selfpipe_lock);
+	if (read(fd, buf, sizeof(buf))) { /* ignore */ }
+	PUNLOCK(selfpipe_lock);
+	event_add(heartbeat, NULL);
 }
 
 
 void dm_queue_heartbeat(void)
 {
-	heartbeat = event_new(evbase, -1, 0, cb_queue_drain, NULL);
-	event_add(heartbeat, &heartbeat_interval);
+	if (pipe(selfpipe))
+		TRACE(TRACE_EMERG, "self-pipe setup failed");
+
+	UNBLOCK(selfpipe[0]);
+	UNBLOCK(selfpipe[1]);
+
+	pthread_mutex_init(&selfpipe_lock, NULL);
+
+	heartbeat = event_new(evbase, selfpipe[0], EV_READ, cb_queue_drain, NULL);
+	event_add(heartbeat, NULL);
 }
 
 void dm_queue_drain(void)
@@ -120,6 +131,11 @@ void dm_queue_push(void *cb, void *session, void *data)
 	D->data     = data;
 
         g_async_queue_push(queue, (gpointer)D);
+	PLOCK(selfpipe_lock);
+	if (selfpipe[1] > -1) {
+		if (write(selfpipe[1], "Q", 1)) { /* ignore */ }
+	}
+	PUNLOCK(selfpipe_lock);
 }
 
 /* 
@@ -497,6 +513,7 @@ static void server_exit(void)
 	server_close_sockets(server_conf);
 	event_base_free(evbase);
 
+	pthread_mutex_destroy(&selfpipe_lock);
 	if (fstdout) fclose(fstdout);
 	if (fstderr) fclose(fstderr);
 	if (fnull) fclose(fnull);
@@ -565,6 +582,7 @@ static void _sock_cb(int sock, short event, void *arg, gboolean ssl)
                                 TRACE(TRACE_ERR, "%d:%s", serr, strerror(serr));
                                 break;
                 }
+                event_add(ev, NULL);
                 return;
         }
 	
@@ -580,6 +598,7 @@ static void _sock_cb(int sock, short event, void *arg, gboolean ssl)
 		mempool_push(pool, c, sizeof(client_sock));
 		mempool_close(&pool);
 		close(csock);
+		event_add(ev, NULL);
 		return;
 	}
 
@@ -592,6 +611,7 @@ static void _sock_cb(int sock, short event, void *arg, gboolean ssl)
 		mempool_push(pool, c, sizeof(client_sock));
 		mempool_close(&pool);
 		close(csock);
+		event_add(ev, NULL);
 		return; // fatal 
 	}
 
@@ -1112,39 +1132,31 @@ void server_config_load(ServerConfig_T * config, const char * const service)
 
 	/* read items: TLS_CAFILE */
 	config_get_value("TLS_CAFILE", service, val);
-	if(strlen(val) == 0)
-		TRACE(TRACE_WARNING, "no value for TLS_CAFILE in config file");
-	strncpy(config->tls_cafile, val, FIELDSIZE);
-        config->tls_cafile[FIELDSIZE - 1] = '\0';
-
-        TRACE(TRACE_DEBUG, "CA file is set to [%s]", config->tls_cafile);
+	if(strlen(val)) {
+		strncpy(config->tls_cafile, val, FIELDSIZE-1);
+		TRACE(TRACE_DEBUG, "CA file is set to [%s]", config->tls_cafile);
+	}
 
 	/* read items: TLS_CERT */
 	config_get_value("TLS_CERT", service, val);
-	if(strlen(val) == 0)
-		TRACE(TRACE_WARNING, "no value for TLS_CERT in config file");
-	strncpy(config->tls_cert, val, FIELDSIZE);
-        config->tls_cert[FIELDSIZE - 1] = '\0';
-
-        TRACE(TRACE_DEBUG, "Certificate file is set to [%s]", config->tls_cert);
+	if(strlen(val)) {
+		strncpy(config->tls_cert, val, FIELDSIZE-1);
+		TRACE(TRACE_DEBUG, "Certificate file is set to [%s]", config->tls_cert);
+	}
 
 	/* read items: TLS_KEY */
 	config_get_value("TLS_KEY", service, val);
-	if(strlen(val) == 0)
-		TRACE(TRACE_WARNING, "no value for TLS_KEY in config file");
-	strncpy(config->tls_key, val, FIELDSIZE);
-        config->tls_key[FIELDSIZE - 1] = '\0';
-
-        TRACE(TRACE_DEBUG, "Key file is set to [%s]", config->tls_key);
+	if(strlen(val)) {
+		strncpy(config->tls_key, val, FIELDSIZE-1);
+		TRACE(TRACE_DEBUG, "Key file is set to [%s]", config->tls_key);
+	}
 
 	/* read items: TLS_CIPHERS */
 	config_get_value("TLS_CIPHERS", service, val);
-	if(strlen(val) == 0)
-		TRACE(TRACE_INFO, "no value for TLS_CIPHERS in config file");
-	strncpy(config->tls_ciphers, val, FIELDSIZE);
-        config->tls_ciphers[FIELDSIZE - 1] = '\0';
-
-        TRACE(TRACE_DEBUG, "Cipher string is set to [%s]", config->tls_ciphers);
+	if(strlen(val)) {
+		strncpy(config->tls_ciphers, val, FIELDSIZE-1);
+		TRACE(TRACE_DEBUG, "Cipher string is set to [%s]", config->tls_ciphers);
+	}
 
 	strncpy(config->service_name, service, FIELDSIZE);
 

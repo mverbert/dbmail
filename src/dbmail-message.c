@@ -415,11 +415,13 @@ static DbmailMessage * _mime_retrieve(DbmailMessage *self)
 				g_strlcpy(internal_date, db_result_get(r,4), SQL_INTERNALDATE_LEN-1);
 			}
 			blob		= db_result_get_blob(r,5,&l);
+			char *str = g_new0(char, l + 1);
+			str = strncpy(str, blob, l);
 
 			if (is_header) {
 				prev_boundary = got_boundary;
 				prev_is_message = is_message;
-				if ((mimetype = find_type((char *)blob))) {
+				if ((mimetype = find_type(str))) {
 					is_message = g_mime_content_type_is_type(mimetype, "message", "rfc822");
 					g_object_unref(mimetype);
 				}
@@ -427,7 +429,7 @@ static DbmailMessage * _mime_retrieve(DbmailMessage *self)
 
 			got_boundary = FALSE;
 
-			if (is_header && find_boundary((char *)blob, boundary)) {
+			if (is_header && find_boundary(str, boundary)) {
 				got_boundary = TRUE;
 				dprint("<boundary depth=\"%d\">%s</boundary>\n", depth, boundary);
 				strncpy(blist[depth], boundary, MAX_MIME_BLEN-1);
@@ -449,13 +451,14 @@ static DbmailMessage * _mime_retrieve(DbmailMessage *self)
 				p_string_append_printf(m, "\n--%s\n", boundary);
 			}
 
-			p_string_append_len(m, (char *)blob, l);
+			p_string_append_printf(m, "%s", str);
 			dprint("<part is_header=\"%d\" depth=\"%d\" key=\"%d\" order=\"%d\">\n%s\n</part>\n", 
-				is_header, depth, key, order, (char *)blob);
+				is_header, depth, key, order, str);
 
 			if (is_header)
 				p_string_append_printf(m,"\n");
 			
+			g_free(str);
 			row++;
 		}
 
@@ -1321,6 +1324,9 @@ int dbmail_message_cache_headers(const DbmailMessage *self)
 {
 	assert(self);
 	assert(self->id);
+	GMimeObject *part;
+	GMimeContentType *content_type;
+	GMimeContentDisposition *content_disp;
 
 	if (! GMIME_IS_MESSAGE(self->content)) {
 		TRACE(TRACE_ERR,"self->content is not a message");
@@ -1336,6 +1342,24 @@ int dbmail_message_cache_headers(const DbmailMessage *self)
 			GMIME_OBJECT(self->content));
 	g_mime_header_list_foreach(headers, (GMimeHeaderForeachFunc)_header_cache,
 			(gpointer)self);
+
+	/* 
+	 * gmime treats content-type and content-disposition differently
+	 *
+	 */
+	part = g_mime_message_get_mime_part(GMIME_MESSAGE(self->content));
+	if ((content_type = g_mime_object_get_content_type(part))) {
+		char *value = g_mime_content_type_to_string(content_type);
+		_header_cache("content-type", (const char *)value, (gpointer)self);
+		free(value);
+	}
+
+	if ((content_disp = g_mime_object_get_content_disposition(part))) {
+		char *value = g_mime_content_disposition_to_string(
+				content_disp, FALSE);
+		_header_cache("content-disposition", (const char *)value, (gpointer)self);
+		free(value);
+	}
 
 	/* 
 	 * if there is no Date: header, store the envelope's date

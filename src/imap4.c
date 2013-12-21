@@ -141,6 +141,7 @@ void imap_cleanup_deferred(gpointer data)
 	ImapSession *session = (ImapSession *)D->session;
 	ClientBase_T *ci = session->ci;
 
+	if (ci->rev) event_del(ci->rev);
 	if (client_wbuf_len(ci) && (! (ci->client_state & CLIENT_ERR))) {
 		ci_write_cb(ci);
 		dm_queue_push(imap_cleanup_deferred, session, NULL);
@@ -214,7 +215,7 @@ void imap_cb_read(void *arg)
 	TRACE(TRACE_DEBUG,"state [%d] enough %d: %" PRIu64 "/%" PRIu64 "", state, enough, have, need);
 
 	if (state & CLIENT_ERR) {
-		imap_handle_abort(session);
+		imap_session_bailout(session);
 	} else if (state & CLIENT_EOF) {
 		ci_cork(session->ci);
 		if (enough)
@@ -251,6 +252,8 @@ void socket_read_cb(int fd, short what, void *arg)
 //
 static void imap_session_reset(ImapSession *session)
 {
+	ClientState_T current;
+
 	TRACE(TRACE_DEBUG,"[%p]", session);
 
 	memset(session->tag, 0, sizeof(session->tag));
@@ -262,7 +265,15 @@ static void imap_session_reset(ImapSession *session)
 	session->parser_state = FALSE;
 	dbmail_imap_session_args_free(session, FALSE);
 
-	session->ci->timeout->tv_sec = server_conf->timeout; 
+	SESSION_LOCK(session->lock);
+	current = session->state;
+	SESSION_UNLOCK(session->lock);
+
+	if (current == CLIENTSTATE_AUTHENTICATED)
+		session->ci->timeout->tv_sec = server_conf->timeout; 
+	else
+		session->ci->timeout->tv_sec = server_conf->login_timeout; 
+
 	ci_uncork(session->ci);
 	
 	return;
@@ -394,6 +405,11 @@ static void imap_handle_continue(ImapSession *session)
 
 static void imap_handle_retry(ImapSession *session)
 {
+	if (session->ci->client_state & CLIENT_EOF) {
+		imap_session_bailout(session);
+		return;
+	}
+
 	session->command_state = TRUE;
 	dbmail_imap_session_buff_flush(session);
 	session->error_count++;	/* server returned BAD or NO response */

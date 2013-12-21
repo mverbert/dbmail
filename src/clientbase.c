@@ -86,20 +86,25 @@ static void client_wbuf_scale(ClientBase_T *client)
 static int client_error_cb(int sock, int error, void *arg)
 {
 	int r = 0;
+	int serr;
 	ClientBase_T *client = (ClientBase_T *)arg;
 	if (client->sock->ssl) {
 		int sslerr = 0;
 		if (! (sslerr = SSL_get_error(client->sock->ssl, error)))
 			return r;
-		
+
+		serr = errno;
+
 		dm_tls_error();
 		switch (sslerr) {
+			case SSL_ERROR_ZERO_RETURN:
+				client->client_state |= CLIENT_EOF;
+				break;
 			case SSL_ERROR_WANT_READ:
 			case SSL_ERROR_WANT_WRITE:
 				break; // reschedule
 			case SSL_ERROR_SYSCALL:
-				if (error == -1)
-					TRACE(TRACE_DEBUG, "[%p] %d %s", client, sock, strerror(errno));
+				TRACE(TRACE_DEBUG, "[%p] %d %s", client, sock, strerror(serr));
 				client_rbuf_clear(client);
 				client_wbuf_clear(client);
 				r = -1;
@@ -119,7 +124,7 @@ static int client_error_cb(int sock, int error, void *arg)
 				break; // reschedule
 
 			default:
-				TRACE(TRACE_DEBUG,"[%p] %d %s[%d], %p", client, sock, strerror(error), error, arg);
+				TRACE(TRACE_DEBUG,"[%p] fd [%d] %s[%d], %p", client, sock, strerror(error), error, arg);
 				r = error;
 				client_rbuf_clear(client);
 				client_wbuf_clear(client);
@@ -309,18 +314,27 @@ int ci_write(ClientBase_T *client, char * msg, ...)
 				client->tls_wbuf_n = n;
 			}
 			t = (int64_t)SSL_write(client->sock->ssl, (gconstpointer)client->tls_wbuf, client->tls_wbuf_n);
-			e = t;
 		} else {
 			t = (int64_t)write(client->tx, (gconstpointer)s, n);
-			e = errno;
 		}
 
 		if (t == -1) {
-			if ((e = client->cb_error(client->tx, e, (void *)client))) {
+			if (client->sock->ssl)
+				e = t;
+			else
+				e = errno;
+
+			if (client->cb_error(client->tx, e, (void *)client)) {
 				client->client_state |= CLIENT_ERR;
 				return -1;
 			} 
 			return 0;
+		} else if ((t == 0) && (client->sock->ssl)) {
+			TRACE(TRACE_DEBUG, "ssl_ragged_eof");
+			if (client->cb_error(client->tx, t, (void *)client) < 0) {
+				client->client_state |= CLIENT_ERR;
+				return -1;
+			} 
 		} 
 
 		memset(buf, 0, sizeof(buf));
@@ -370,9 +384,10 @@ void ci_read_cb(ClientBase_T *client)
 			break;
 
 		} else if (t == 0) {
-			int e = errno;
-			if (client->sock->ssl)
-				client->cb_error(client->rx, e, (void *)client);
+			if (client->sock->ssl) {
+				if (client->cb_error(client->rx, t, (void *)client))
+					client->client_state |= CLIENT_ERR;
+			}
 			client->client_state |= CLIENT_EOF;
 			break;
 
@@ -514,14 +529,18 @@ void ci_close(ClientBase_T *client)
 
 	if ((client->sock->sock > 1) && (shutdown(client->sock->sock, SHUT_RDWR)))
 		TRACE(TRACE_DEBUG, "[%s]", strerror(errno));
-	if (client->tx >= 0 && (close(client->tx)))
-		TRACE(TRACE_DEBUG, "[%s]", strerror(errno));
-	if (client->rx >= 0 && (close(client->rx)))
-			TRACE(TRACE_DEBUG, "[%s]", strerror(errno));
+
+	if (client->tx >= 0) {
+		close(client->tx);
+		client->tx = -1;
+	}
+
+	if (client->rx >= 0) {
+	       	close(client->rx);
+		client->rx = -1;
+	}
 
 	ci_authlog_close(client);
-	client->tx = -1;
-	client->rx = -1;
 
 	if (client->auth) {
 		Cram_T c = client->auth;

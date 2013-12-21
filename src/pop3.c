@@ -222,8 +222,6 @@ static void pop3_close(ClientSession_T *session)
 	} else {
 		ci_write(ci, "+OK see ya later\r\n");
 	}
-
-	client_session_bailout(&session);
 }
 
 
@@ -244,8 +242,11 @@ static void pop3_handle_input(void *arg)
 		return;
 
 	ci_cork(session->ci);
-	if (pop3(session, buffer) > 0)
-		ci_uncork(session->ci);
+	if (pop3(session, buffer) <= 0) {
+		client_session_bailout(&session);
+		return;
+	}
+	ci_uncork(session->ci);
 }
 
 void pop3_cb_write(void *arg)
@@ -270,6 +271,7 @@ void pop3_cb_time(void * arg)
 	session->state = CLIENTSTATE_QUIT;
 
 	ci_write(session->ci, "-ERR I'm leaving, you're too slow\r\n");
+	client_session_bailout(&session);
 }
 
 static void reset_callbacks(ClientSession_T *session)
@@ -304,14 +306,18 @@ int pop3_error(ClientSession_T * session, const char *formatstring, ...)
 		ci_write(ci, "-ERR too many errors\r\n");
 		client_session_bailout(&session);
 		return -3;
-	} else {
-		va_start(ap, formatstring);
-		va_copy(cp, ap);
-		s = g_strdup_vprintf(formatstring, cp);
-		va_end(cp);
-		va_end(ap);
-		ci_write(ci, s);
-		g_free(s);
+	} 
+	va_start(ap, formatstring);
+	va_copy(cp, ap);
+	s = g_strdup_vprintf(formatstring, cp);
+	va_end(cp);
+	va_end(ap);
+	ci_write(ci, s);
+	g_free(s);
+
+	if (ci->client_state & CLIENT_ERR) {
+		client_session_bailout(&session);
+		return -3;
 	}
 
 	TRACE(TRACE_DEBUG, "an invalid command was issued");
@@ -450,7 +456,7 @@ int pop3(ClientSession_T *session, const char *buffer)
 		if (session->ci->sock->ssl_state)
 			return pop3_error(session, "-ERR TLS already active\r\n");
 		ci_write(session->ci, "+OK Begin TLS now\r\n");
-		if (ci_starttls(session->ci) < 0) return 0;
+		if (ci_starttls(session->ci) < 0) return -1;
 		return 1;
 
 	case POP3_USER:
