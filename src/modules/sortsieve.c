@@ -519,11 +519,9 @@ int sort_getscript(sieve2_context_t *s, void *my)
 
 int sort_getheader(sieve2_context_t *s, void *my)
 {
-#define HEADER_REPEAT 10
-#define HEADER_WIDTH 1024
 	struct sort_context *m = (struct sort_context *)my;
 	char *header;
-	char bodylist[HEADER_REPEAT][HEADER_WIDTH];
+	char **bodylist;
 	GList *headers;
 	unsigned i;
 
@@ -531,13 +529,13 @@ int sort_getheader(sieve2_context_t *s, void *my)
 	
 	headers = dbmail_message_get_header_repeated(m->message, header);
 	
-	memset(bodylist, 0, sizeof(bodylist));
-
+	bodylist = g_new0(char *,g_list_length(headers)+1);
 	i = 0;
-	while (headers && i < HEADER_REPEAT) {
+	while (headers) {
 		char *decoded = dbmail_iconv_decode_text((char *)headers->data);
-		strncpy(bodylist[i++], decoded, HEADER_WIDTH-1);
-		g_free(decoded);
+		bodylist[i++] = decoded;
+		/* queue the decoded value for freeing later on */
+		m->freelist = g_list_prepend(m->freelist, decoded);
 
 		if (! g_list_next(headers))
 			break;
@@ -545,7 +543,7 @@ int sort_getheader(sieve2_context_t *s, void *my)
 	}
 	g_list_free(g_list_first(headers));
 
-	/* We have to free the header array, but not its contents. */
+	/* We have to free the header array. */
 	m->freelist = g_list_prepend(m->freelist, bodylist);
 
 	for (i = 0; bodylist[i] != NULL; i++) {
@@ -553,7 +551,7 @@ int sort_getheader(sieve2_context_t *s, void *my)
 			header, bodylist[i]);
 	}
 
-	sieve2_setvalue_stringlist(s, "body", (char ** const)bodylist);
+	sieve2_setvalue_stringlist(s, "body", bodylist);
 
 	return SIEVE2_OK;
 }
