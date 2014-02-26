@@ -326,38 +326,96 @@ static GMimeContentType *find_type(const char *s)
 #define MAX_MIME_DEPTH 64
 #define MAX_MIME_BLEN 128
 
-static bool find_boundary(const char *s, char *boundary)
+static bool simple_boundary(const char *s, char *boundary)
 {
 	int i = 0;
-	char *rest = NULL;
 	bool wantquote = false;
+	s += 9; // jump past 'boundary='
+	if (s[0] == '"') {
+		wantquote=true;
+		s++;
+	}
+	while (s[i]) {
+		if (wantquote && s[i]=='"') {
+			break;
+		}
+		if (! wantquote && (isspace(s[i]) || s[i]==';'))
+			break;
+		i++;
+	}
+		
+	strncpy(boundary, s, min(i, MAX_MIME_BLEN-1));
+	return true;
+}
+
+static bool wrapped_boundary(const char *s, char *boundary)
+{
+	int i = 0;
+	char *match;
+	int decimal = 0;
+	size_t buflen = MAX_MIME_BLEN-1;
+	s += 11; // jump past 'boundary*0='
+	while (true) {
+		bool wantquote = false;
+		if (s[0] == '"') {
+			wantquote = true;
+			s++;
+		}
+		while (s[i]) {
+			if (wantquote && s[i] == '"')
+				break;
+			if (! wantquote && (isspace(s[i]) || s[i]==';'))
+				break;
+			i++;
+		}
+		strncat(boundary, s, min(i, (int)buflen));
+
+		if (! s[i])
+			break;
+
+		buflen -= i;
+		decimal++;
+		match = g_strdup_printf("boundary*%d=", decimal);
+		TRACE(TRACE_DEBUG, "search [%s] for [%s]", &s[i], match);
+		s = g_strcasestr(&s[i], match);
+		TRACE(TRACE_DEBUG, "search: [%s]", s);
+		if (! s) {
+			g_free(match);
+			break;
+		}
+
+		s += strlen(match);
+		i = 0;
+		g_free(match);
+
+		if (! s[i])
+			break;
+
+	}
+	return true;
+}
+
+
+static bool find_boundary(const char *s, char *boundary)
+{
+	char *rest = NULL;
 	char *type = find_type_header(s);
 
 	memset(boundary, 0, MAX_MIME_BLEN);
 	if (! type)
 		return false;
-	rest = g_strcasestr(type, "boundary=");
-	if (! rest) {
+
+	if ((rest = g_strcasestr(type, "boundary="))) {
 		g_free(type);
-		return false;
+		return simple_boundary(rest, boundary);
 	}
-	rest += 9; // jump past 'boundary='
-	if (rest[0] == '"') {
-		wantquote=true;
-		rest++;
+	if ((rest = g_strcasestr(type, "boundary*0="))) {
+		g_free(type);
+		return wrapped_boundary(rest, boundary);
 	}
-	while (rest[i]) {
-		if (wantquote && rest[i]=='"') {
-			break;
-		}
-		if (! wantquote && (isspace(rest[i]) || rest[i]==';'))
-			break;
-		i++;
-	}
-		
-	strncpy(boundary, rest, min(i, MAX_MIME_BLEN-1));
+
 	g_free(type);
-	return true;
+	return false;
 }
 
 static DbmailMessage * _mime_retrieve(DbmailMessage *self)
@@ -1639,7 +1697,7 @@ static void _header_cache(const char *header, const char *raw, gpointer user_dat
 	volatile gboolean isaddr = 0, isdate = 0, issubject = 0;
 	const char *charset = dbmail_message_get_charset(self);
 	char datefield[32];
-	char sortfield[CACHE_WIDTH];
+	char sortfield[CACHE_WIDTH*4];
 	char *value = NULL;
 	InternetAddressList *emaillist;
 	InternetAddress *ia;
@@ -1719,7 +1777,7 @@ static void _header_cache(const char *header, const char *raw, gpointer user_dat
 	if(issubject) {
 		char *s, *t = dm_base_subject(value);
 		s = dbmail_iconv_str_to_db(t, charset);
-		g_strlcpy(sortfield, s, CACHE_WIDTH-1);
+		g_utf8_strncpy(sortfield, s, CACHE_WIDTH-1);
 		g_free(s);
 		g_free(t);
 	}
@@ -1738,7 +1796,7 @@ static void _header_cache(const char *header, const char *raw, gpointer user_dat
 	}
 
 	if (sortfield[0] == '\0')
-		g_strlcpy(sortfield, value, CACHE_WIDTH-1);
+		g_utf8_strncpy(sortfield, value, CACHE_WIDTH-1);
 
 	/* Fetch header value id if exists, else insert, and return new id */
 	_header_value_get_id(value, sortfield, datefield, &headervalue_id);

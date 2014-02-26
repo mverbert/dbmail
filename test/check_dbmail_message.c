@@ -495,11 +495,12 @@ START_TEST(test_dbmail_message_get_internal_date)
 	// test work-around for broken envelope header
 	m = dbmail_message_new(NULL);
 	m = dbmail_message_init_with_string(m, simple_broken_envelope);
+
+	result = dbmail_message_get_internal_date(m, 0);
+	fail_unless(MATCH(expect10,result),"dbmail_message_get_internal_date failed exp [%s] got [%s]", expect10, result);
+
 	char *before = dbmail_message_to_string(m);
 	char *after = store_and_retrieve(m);
-	result = dbmail_message_get_internal_date(m, 0);
-
-	fail_unless(MATCH(expect10,result),"dbmail_message_get_internal_date failed exp [%s] got [%s]", expect10, result);
 	COMPARE(before, after);
 	g_free(before);
 	g_free(after);
@@ -877,6 +878,73 @@ START_TEST(test_db_get_message_lines)
 }
 END_TEST
 
+/* Fetching subject from database */
+extern DBParam_T db_params;
+#define DBPFX db_params.pfx
+
+int test_db_get_subject(uint64_t physid, char **subject)
+{
+        Connection_T c; ResultSet_T r;
+        const char *query_result = NULL;
+        volatile int t = DM_EGENERAL;
+
+        c = db_con_get();
+        TRY
+                r = db_query(c, "SELECT subjectfield "
+                                "FROM %ssubjectfield WHERE physmessage_id = %" PRIu64 "",
+                                DBPFX,physid);
+                if (db_result_next(r)) {
+                        query_result = db_result_get(r, 0);
+                        if (query_result && (strlen(query_result) > 0)) {
+                                *subject = g_strdup(query_result);
+                        }
+                }
+                t = DM_SUCCESS;
+        CATCH(SQLException)
+                LOG_SQLERROR;
+        FINALLY
+                db_con_close(c);
+        END_TRY;
+
+        return t;
+}
+
+START_TEST(test_dbmail_message_utf8_headers)
+{
+	DbmailMessage *m;
+	uint64_t physid = 0;
+	const char *s;
+	char *s_dec,*t = NULL;
+	const char *utf8_invalid_fixed = "=?UTF-8?B?0J/RgNC40LPQu9Cw0YjQsNC10Lwg0L3QsCDRgdC10YA/IA==?= =?UTF-8?B?0LrQvtC90LXRhiDRgdGC0YDQvtC60Lg=?=";
+
+        m = dbmail_message_new(NULL);
+        m = dbmail_message_init_with_string(m,utf8_long_header);
+	dbmail_message_store(m);
+	physid = dbmail_message_get_physid(m);
+
+	s = dbmail_message_get_header(m,"Subject");
+	s_dec = g_mime_utils_header_decode_phrase(s);
+	test_db_get_subject(physid,&t);
+
+        fail_unless(MATCH(s_dec,t), "utf8 long header failed");
+
+	dbmail_message_free(m);
+	g_free(s_dec);
+	//
+
+	m = dbmail_message_new(NULL);
+	m = dbmail_message_init_with_string(m,utf8_invalid);
+	dbmail_message_store(m);
+	physid = dbmail_message_get_physid(m);
+
+	s_dec = g_mime_utils_header_decode_phrase(utf8_invalid_fixed);
+	test_db_get_subject(physid,&t);
+        fail_unless(MATCH(s_dec,t), "utf8 invalid failed");
+
+	dbmail_message_free(m);
+}
+END_TEST
+
 Suite *dbmail_message_suite(void)
 {
 	Suite *s = suite_create("Dbmail Message");
@@ -908,6 +976,7 @@ Suite *dbmail_message_suite(void)
 	tcase_add_test(tc_message, test_dbmail_message_get_size);
 	tcase_add_test(tc_message, test_encoding);
 	tcase_add_test(tc_message, test_db_get_message_lines);
+	tcase_add_test(tc_message, test_dbmail_message_utf8_headers);
 	return s;
 }
 
