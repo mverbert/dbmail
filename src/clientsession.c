@@ -134,15 +134,27 @@ void client_session_bailout(ClientSession_T **session)
 {
 	ClientSession_T *c = *session;
 	Mempool_T pool;
+	size_t before = 0, after = 0;
+	int failcount = 0;
 	List_T args = NULL;
 	List_T from = NULL;
 	List_T rcpt = NULL;
 	List_T messagelst = NULL;
+	ClientBase_T *client = c->ci;
 
 	assert(c);
 
-	while (client_wbuf_len(c->ci) && (! (c->ci->client_state & CLIENT_ERR))) {
+	before = after = client_wbuf_len(c->ci);
+
+	while (after && (! (c->ci->client_state & CLIENT_ERR)) && (failcount < 100)) {
+		before = client_wbuf_len(c->ci);
 		ci_write_cb(c->ci);
+		after = client_wbuf_len(c->ci);
+		if (before == after)
+			failcount++;
+		else
+			failcount = 0;
+
 	}
 	ci_cork(c->ci);
 
@@ -152,7 +164,6 @@ void client_session_bailout(ClientSession_T **session)
 
 	client_session_reset(c);
 	c->state = CLIENTSTATE_QUIT_QUEUED;
-	ci_close(c->ci);
 
 	p_string_free(c->rbuff, TRUE);
 
@@ -215,8 +226,9 @@ void client_session_bailout(ClientSession_T **session)
 
 	pool = c->pool;
 	mempool_push(pool, c, sizeof(ClientSession_T));
-	mempool_close(&pool);
 	c = NULL;
+
+	ci_close(client);
 }
 
 void client_session_read(void *arg)
