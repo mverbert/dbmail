@@ -1,7 +1,7 @@
 # Copyright (C) 1999-2004 IC & S  dbmail@ic-s.nl
 # Copyright (C) 2004-2014 NFG Net Facilities Group support@nfg.nl
 
-AC_INIT([dbmail], [3.1.13], [dbmail@dbmail.org])
+AC_INIT([dbmail], [3.1.15], [dbmail@dbmail.org])
 AC_CONFIG_AUX_DIR(config)
 AM_CONFIG_HEADER(config.h:config.in)
 AC_CONFIG_MACRO_DIR([m4])
@@ -72,6 +72,7 @@ AC_SUBST(DM_LOGDIR)
 AC_SUBST(DM_CONFDIR)
 AC_SUBST(DM_STATEDIR)
 AC_SUBST(DM_PKGLIBDIR)
+AC_SUBST(CHECK_LIBS)
 AC_SUBST(DM_PWD)
 
 AC_PROG_LIBTOOL
