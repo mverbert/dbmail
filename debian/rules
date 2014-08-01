@@ -5,9 +5,16 @@ include /usr/share/cdbs/1/class/autotools.mk
 
 # Add here any variable or target overrides you need.
 
-makebuilddir/dbmail::
-	mkdir -p m4 config
+m4 config:
+	mkdir -p $@
+
+configure: configure.ac
 	autoreconf --install
+
+aclocal.m4:
+	autoreconf --install
+
+makebuilddir/dbmail:: m4 config configure Makefile.in
 
 install/dbmail::
 	-rm debian/dbmail/usr/lib/dbmail/*.la
