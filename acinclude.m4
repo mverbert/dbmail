@@ -10,8 +10,8 @@ AC_MSG_RESULT([
  PREFIX                     $prefix
  USE_DM_GETOPT:             $USE_DM_GETOPT
  CFLAGS:                    $CFLAGS
- GLIB:                      $ac_glib_libs
- GMIME:                     $ac_gmime_libs
+ GLIB:                      $GLIB_LIBS
+ GMIME:                     $GMIME_LIBS
  SIEVE:                     $SIEVEINC$SIEVELIB
  LDAP:                      $LDAPINC$LDAPLIB
  SHARED:                    $enable_shared
@@ -21,8 +21,8 @@ AC_MSG_RESULT([
  MATH:                      $MATHLIB
  MHASH:                     $MHASHLIB
  LIBEVENT:                  $EVENTLIB
- OPENSSL:                   $SSLLIB
- ZDB:                       $ZDBLIB
+ OPENSSL:                   $SSL_LIBS
+ ZDB:                       $ZDB_LIBS
  JEMALLOC:                  $JEMALLOCLIB
 
 ])
@@ -280,29 +280,10 @@ AC_DEFUN([DM_CHECK_JEMALLOC], [dnl
 ])
 
 AC_DEFUN([DM_CHECK_ZDB], [dnl
-	AC_ARG_WITH(zdb,[  --with-zdb=PATH	  path to libzdb base directory (e.g. /usr/local or /usr)],
-		[lookforzdb="$withval"],[lookforzdb="no"])
-	if test [ "x$lookforzdb" = "xno" ] ; then
-		CFLAGS="$CFLAGS -I${ac_default_prefix}/include/zdb -I/usr/include/zdb"
-	else
-		CFLAGS="$CFLAGS -I${lookforzdb}/include/zdb"
-	fi
-	AC_CHECK_HEADERS([URL.h ResultSet.h PreparedStatement.h Connection.h ConnectionPool.h SQLException.h],
-		[ZDBLIB="-lzdb"], 
-		[ZDBLIB="failed"],
-	[[
-#include <URL.h>
-#include <ResultSet.h>
-#include <PreparedStatement.h>
-#include <Connection.h>
-#include <ConnectionPool.h>
-#include <SQLException.h>	
-	]])
-	if test [ "x$ZDBLIB" = "xfailed" ]; then
-		AC_MSG_ERROR([Could not find ZDB library.])
-	else
-		LDFLAGS="$LDFLAGS $ZDBLIB"
-	fi
+PKG_CHECK_MODULES([ZDB], [zdb >= 2.10], [dnl
+CFLAGS="$CFLAGS $ZDB_CFLAGS"
+LDFLAGS="$LDFLAGS $ZDB_LIBS"
+])
 ])
 
 AC_DEFUN([DM_SET_DEFAULT_CONFIGURATION], [dnl
@@ -338,13 +319,10 @@ AC_DEFUN([DM_CHECK_EVENT], [
 ])
 
 AC_DEFUN([DM_CHECK_SSL], [
-	AC_CHECK_HEADERS([openssl/ssl.h],
-	 [SSLLIB=`pkg-config --libs openssl 2>/dev/null`],[SSLLIB="failed"])
-	if test [ "x$SSLLIB" = "xfailed" ]; then
-		AC_MSG_ERROR([Could not find OPENSSL library.])
-	else
-		LDFLAGS="$LDFLAGS $SSLLIB"
-	fi
+PKG_CHECK_MODULES([SSL], [libssl], [dnl
+CFLAGS="$CFLAGS $SSL_CFLAGS"
+LDFLAGS="$LDFLAGS $SSL_LIBS"
+])
 ])
 
 AC_DEFUN([AC_COMPILE_WARNINGS],
@@ -370,69 +348,17 @@ unset ac_compile_warnings_opt
 ])
 
 AC_DEFUN([DM_CHECK_GLIB], [dnl
-AC_PATH_PROG(glibconfig,pkg-config)
-if test [ -z "$glibconfig" ]
-then
-	AC_MSG_ERROR([pkg-config executable not found. Make sure pkg-config is in your path])
-else
-	AC_MSG_CHECKING([GLib headers])
-	ac_glib_cflags=`${glibconfig} --cflags glib-2.0 --cflags gmodule-2.0 --cflags gthread-2.0 2>/dev/null`
-	if test -z "$ac_glib_cflags"
-	then
-		AC_MSG_RESULT([no])
-		AC_MSG_ERROR([Unable to locate glib development files])
-	fi
- 
-	CFLAGS="$CFLAGS $ac_glib_cflags"
-	AC_MSG_RESULT([$ac_glib_cflags])
-        AC_MSG_CHECKING([Glib libraries])
-	ac_glib_libs=`${glibconfig} --libs glib-2.0 --libs gmodule-2.0 --libs gthread-2.0 2>/dev/null`
-	if test -z "$ac_glib_libs"
-	then
-		AC_MSG_RESULT([no])
-		AC_MSG_ERROR([Unable to locate glib libaries])
-	fi
- 	ac_glib_minvers="2.16"
-	AC_MSG_CHECKING([GLib version >= $ac_glib_minvers])
-	ac_glib_vers=`${glibconfig}  --atleast-version=$ac_glib_minvers glib-2.0 2>/dev/null && echo yes`
-	if test -z "$ac_glib_vers"
-	then
-		AC_MSG_ERROR([At least GLib version $ac_glib_minvers is required.])
-	fi
-
-	LDFLAGS="$LDFLAGS $ac_glib_libs"
-        AC_MSG_RESULT([$ac_glib_libs])
-fi
+PKG_CHECK_MODULES([GLIB], [glib-2.0 >= 2.16 gmodule-2.0 >= 2.16 gobject-2.0 >= 2.16 gthread-2.0 >= 2.16], [dnl
+CFLAGS="$CFLAGS $GLIB_CFLAGS"
+LDFLAGS="$LDFLAGS $GLIB_LIBS"
+])
 ])
 
 AC_DEFUN([DM_CHECK_GMIME], [dnl
-AC_PATH_PROG(gmimeconfig,pkg-config)
-if test [ -z "$gmimeconfig" ]
-then
-	AC_MSG_ERROR([pkg-config executable not found. Make sure pkg-config is in your path])
-else
-	AC_MSG_CHECKING([GMime headers])
-	ac_gmime_cflags=`${gmimeconfig} --cflags gmime-2.6 2>/dev/null|| ${gmimeconfig} --cflags gmime-2.4 2>/dev/null`
-	if test -z "$ac_gmime_cflags"
-	then
-		AC_MSG_RESULT([no])
-		AC_MSG_ERROR([Unable to locate gmime development files])
-	else
-		CFLAGS="$CFLAGS $ac_gmime_cflags"
-		AC_MSG_RESULT([$ac_gmime_cflags])
-	fi
-	
-        AC_MSG_CHECKING([GMime libraries])
-	ac_gmime_libs=`${gmimeconfig} --libs gmime-2.6 2>/dev/null|| ${gmimeconfig} --libs gmime-2.4 2>/dev/null`
-	if test -z "$ac_gmime_libs"
-	then
-		AC_MSG_RESULT([no])
-		AC_MSG_ERROR([Unable to locate gmime libaries])
-	else
-		LDFLAGS="$LDFLAGS $ac_gmime_libs"
-        	AC_MSG_RESULT([$ac_gmime_libs])
-	fi
-fi
+PKG_CHECK_MODULES([GMIME], [gmime-2.6 >= 2.6.7], [dnl
+CFLAGS="$CFLAGS $GMIME_CFLAGS"
+LDFLAGS="$LDFLAGS $GMIME_LIBS"
+])
 ])
 
 AC_DEFUN([DM_PATH_CHECK],[dnl
