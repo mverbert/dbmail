@@ -125,7 +125,7 @@ noinst_LTLIBRARIES = libdbmail.la
 endif
 
 libdbmail_la_SOURCES = $(COMMON) $(SERVER) $(MODULES)
-libdbmail_la_LIBADD = $(STATIC_MODULES)
+libdbmail_la_LIBADD = $(STATIC_MODULES) ../sql/mysql/upgrades/libmydsu.a ../sql/postgresql/upgrades/libpgdsu.a ../sql/sqlite/liblitedsc.a ../sql/sqlite/upgrades/liblitedsu.a
 libdbmail_la_LDFLAGS = $(AM_LDFLAGS) @SOCKETLIB@
 libdbmail_la_CFLAGS = $(AM_CFLAGS)
 

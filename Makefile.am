@@ -1,6 +1,6 @@
 ACLOCAL_AMFLAGS = -I m4
 
-SUBDIRS = src test
+SUBDIRS = sql src test
 
 if MANPAGES
 SUBDIRS += man

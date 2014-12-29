@@ -59,11 +59,6 @@ AC_CHECK_HEADERS(endian.h)
 AC_CHECK_HEADERS(crypt.h)
 AC_CHECK_LIB(crypt, crypt, [ CRYPTLIB="-lcrypt" ])
 
-DM_SET_SQLITECREATE
-AC_SUBST(SQLITECREATE)
-
-DM_UPGRADE_STEPS
-
 DM_SET_DEFAULT_CONFIGURATION
 AC_SUBST(DM_DEFAULT_CONFIGURATION)
 
@@ -85,6 +80,6 @@ AC_SUBST(CHECK_LIBS)
 AC_SUBST(DM_PWD)
 AC_PROG_LIBTOOL
 
-AC_OUTPUT(src/dbmail.h Makefile src/Makefile src/modules/Makefile man/Makefile test/Makefile systemd/Makefile)
+AC_OUTPUT(src/dbmail.h Makefile src/Makefile src/modules/Makefile man/Makefile test/Makefile systemd/Makefile sql/Makefile sql/postgresql/upgrades/Makefile sql/mysql/upgrades/Makefile sql/sqlite/Makefile sql/sqlite/upgrades/Makefile)
 
 DM_MSG_CONFIGURE_RESULTS

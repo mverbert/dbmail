@@ -26,6 +26,7 @@
 
 #include "dbmail.h"
 #include "dm_mailboxstate.h"
+#include "../sql/query.h"
 
 #define THIS_MODULE "db"
 
@@ -930,22 +931,22 @@ static int check_upgrade_step(int from_version, int to_version)
 
 	switch(db_params.db_driver) {
 		case DM_DRIVER_SQLITE:
-			if (to_version == 32001) query = DM_SQLITE_32001;
-			if (to_version == 32002) query = DM_SQLITE_32002;
-			if (to_version == 32003) query = DM_SQLITE_32003;
-			if (to_version == 32004) query = DM_SQLITE_32004;
+			if (to_version == 32001) query = DM_QUERY(sqlite, 0, 32001);
+			if (to_version == 32002) query = DM_QUERY(sqlite, 32001, 32002);
+			if (to_version == 32003) query = DM_QUERY(sqlite, 32001, 32003);
+			if (to_version == 32004) query = DM_QUERY(sqlite, 32001, 32004);
 		break;
 		case DM_DRIVER_MYSQL:
-			if (to_version == 32001) query = DM_MYSQL_32001;
-			if (to_version == 32002) query = DM_MYSQL_32002;
-			if (to_version == 32003) query = DM_MYSQL_32003;
-			if (to_version == 32004) query = DM_MYSQL_32004;
+			if (to_version == 32001) query = DM_QUERY(mysql, 0, 32001);
+			if (to_version == 32002) query = DM_QUERY(mysql, 32001, 32002);
+			if (to_version == 32003) query = DM_QUERY(mysql, 32001, 32003);
+			if (to_version == 32004) query = DM_QUERY(mysql, 32001, 32004);
 		break;
 		case DM_DRIVER_POSTGRESQL:
-			if (to_version == 32001) query = DM_PGSQL_32001;
-			if (to_version == 32002) query = DM_PGSQL_32002;
-			if (to_version == 32003) query = DM_MYSQL_32003;
-			if (to_version == 32004) query = DM_MYSQL_32004;
+			if (to_version == 32001) query = DM_QUERY(psql, 0, 32001);
+			if (to_version == 32002) query = DM_QUERY(psql, 32001, 32002);
+			if (to_version == 32003) query = DM_QUERY(psql, 32001, 32003);
+			if (to_version == 32004) query = DM_QUERY(psql, 32001, 32004);
 		break;
 		default:
 			TRACE(TRACE_WARNING, "Migrations not supported for database driver");
@@ -989,7 +990,7 @@ int db_check_version(void)
 
 	if ((! db) && (db_params.db_driver == DM_DRIVER_SQLITE)) {
 		TRY
-			db_exec(c, DM_SQLITECREATE);
+			db_exec(c, &_binary_create_tables_sqlite_start);
 			db = 1;
 		CATCH(SQLException)
 			LOG_SQLERROR;

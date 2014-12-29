@@ -555,37 +555,3 @@ AC_DEFUN([CMU_SOCKETS], [
 	AC_SUBST(SOCKETLIB)
 ])
 
-AC_DEFUN([DM_SET_SQLITECREATE], [dnl
-	SQLITECREATE=`sed -e 's/\"/\\\"/g' -e 's/^/\"/' -e 's/$/\\\n\"/' -e '$!s/$/ \\\\/'  sql/sqlite/create_tables.sqlite`
-])
-
-# register upgrades
-AC_DEFUN([DM_UPGRADE_STEPS], [dnl
-	PGSQL_32001=`sed -e 's/\"/\\\"/g' -e 's/^/\"/' -e 's/$/\\\n\"/' -e '$!s/$/ \\\\/'  sql/postgresql/upgrades/32001.psql`
-	MYSQL_32001=`sed -e 's/\"/\\\"/g' -e 's/^/\"/' -e 's/$/\\\n\"/' -e '$!s/$/ \\\\/'  sql/mysql/upgrades/32001.mysql`
-	SQLITE_32001=`sed -e 's/\"/\\\"/g' -e 's/^/\"/' -e 's/$/\\\n\"/' -e '$!s/$/ \\\\/'  sql/sqlite/upgrades/32001.sqlite`
-	AC_SUBST(PGSQL_32001)
-	AC_SUBST(MYSQL_32001)
-	AC_SUBST(SQLITE_32001)
-
-	PGSQL_32002=`sed -e 's/\"/\\\"/g' -e 's/^/\"/' -e 's/$/\\\n\"/' -e '$!s/$/ \\\\/'  sql/postgresql/upgrades/32002.psql`
-	MYSQL_32002=`sed -e 's/\"/\\\"/g' -e 's/^/\"/' -e 's/$/\\\n\"/' -e '$!s/$/ \\\\/'  sql/mysql/upgrades/32002.mysql`
-	SQLITE_32002=`sed -e 's/\"/\\\"/g' -e 's/^/\"/' -e 's/$/\\\n\"/' -e '$!s/$/ \\\\/'  sql/sqlite/upgrades/32002.sqlite`
-	AC_SUBST(PGSQL_32002)
-	AC_SUBST(MYSQL_32002)
-	AC_SUBST(SQLITE_32002)
-
-	PGSQL_32003=`sed -e 's/\"/\\\"/g' -e 's/^/\"/' -e 's/$/\\\n\"/' -e '$!s/$/ \\\\/'  sql/postgresql/upgrades/32003.psql`
-	MYSQL_32003=`sed -e 's/\"/\\\"/g' -e 's/^/\"/' -e 's/$/\\\n\"/' -e '$!s/$/ \\\\/'  sql/mysql/upgrades/32003.mysql`
-	SQLITE_32003=`sed -e 's/\"/\\\"/g' -e 's/^/\"/' -e 's/$/\\\n\"/' -e '$!s/$/ \\\\/'  sql/sqlite/upgrades/32003.sqlite`
-	AC_SUBST(PGSQL_32003)
-	AC_SUBST(MYSQL_32003)
-	AC_SUBST(SQLITE_32003)
-
-	PGSQL_32004=`sed -e 's/\"/\\\"/g' -e 's/^/\"/' -e 's/$/\\\n\"/' -e '$!s/$/ \\\\/'  sql/postgresql/upgrades/32004.psql`
-	MYSQL_32004=`sed -e 's/\"/\\\"/g' -e 's/^/\"/' -e 's/$/\\\n\"/' -e '$!s/$/ \\\\/'  sql/mysql/upgrades/32004.mysql`
-	SQLITE_32004=`sed -e 's/\"/\\\"/g' -e 's/^/\"/' -e 's/$/\\\n\"/' -e '$!s/$/ \\\\/'  sql/sqlite/upgrades/32004.sqlite`
-	AC_SUBST(PGSQL_32004)
-	AC_SUBST(MYSQL_32004)
-	AC_SUBST(SQLITE_32004)
-])
