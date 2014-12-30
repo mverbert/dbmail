@@ -105,7 +105,7 @@ case "$1" in
 		sed -i 's/\(^driver\W*=\)\(\W*$\)/\1 sqlite/' $CONFIG
 	fi
 
-	if [ ! -d "$DEBIAN_CONFIG" ]; then
+	if [ ! -f "$DEBIAN_CONFIG" ]; then
 		ucf --debconf-ok $DEBIAN_CONFIG_EX $DEBIAN_CONFIG
 	fi
 
