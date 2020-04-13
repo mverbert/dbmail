@@ -281,24 +281,10 @@ AC_DEFUN([DM_CHECK_JEMALLOC], [dnl
 ])
 
 AC_DEFUN([DM_CHECK_ZDB], [dnl
-	AC_ARG_WITH(zdb,[  --with-zdb=PATH	  path to libzdb base directory (e.g. /usr/local or /usr)],
-		[lookforzdb="$withval"],[lookforzdb="no"])
-	if test [ "x$lookforzdb" = "xno" ] ; then
-		CFLAGS="$CFLAGS -I${ac_default_prefix}/include/zdb -I/usr/include/zdb"
-	else
-		CFLAGS="$CFLAGS -I${lookforzdb}/include/zdb"
-	fi
-	AC_CHECK_HEADERS([zdb.h],
-		[ZDBLIB="-lzdb"], 
-		[ZDBLIB="failed"],
-	[[
-#include <zdb.h>
-	]])
-	if test [ "x$ZDBLIB" = "xfailed" ]; then
-		AC_MSG_ERROR([Could not find ZDB library.])
-	else
-		LDFLAGS="$LDFLAGS $ZDBLIB"
-	fi
+	PKG_CHECK_MODULES([ZDB], [zdb], [
+		CFLAGS="$CFLAGS $ZDB_CFLAGS"
+		LDFLAGS="$LDFLAGS $ZDB_LIBS"
+	])
 ])
 
 AC_DEFUN([DM_SET_DEFAULT_CONFIGURATION], [dnl
