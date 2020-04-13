@@ -1,3 +1,9 @@
+dbmail (3.2.4-beta-1) unstable; urgency=medium
+
+  * new package from dbmail git head (9e69b94697eb172a75463b54ff19d929d8f6e63a)
+
+ -- Matthieu Verbert <matthieu.verbert@aitb.org>  Sun, 12 Apr 2020 17:31:50 +0200
+
 dbmail (3.2.3-3) unstable; urgency=medium
 
   * new package from dbmail git head (8875c553e139d3ed2c49ac8f8d9b39a923089b56)
